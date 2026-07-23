@@ -1,0 +1,4 @@
+/mvnw text eol=lf
+*.cmd text eol=crlf
+# Obliga a Git a usar LF en todos los archivos de texto, ignorando la configuración de Windows
+* text=auto eol=lf
