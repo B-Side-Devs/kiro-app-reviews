@@ -1,0 +1,3 @@
+[submodule "frontend"]
+	path = frontend
+	url = https://github.com/B-Side-Devs/kiro-app-reviews-frontend.git
