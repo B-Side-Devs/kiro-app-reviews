@@ -1,3 +1,78 @@
+# =============================================================================
+# Spring Boot configuration
+#
+# This file uses YAML document separators (`---`) to declare profile-scoped
+# configuration. The first document holds properties that apply to every
+# profile; subsequent documents activate only when their `spring.config.
+# activate.on-profile` matches the active profile.
+#
+# Profiles:
+#   - dev  -> local development environment (Docker Compose).
+#            Datasource, Flyway, Actuator and DevTools settings live below.
+#
+# NEVER commit literal credential values here. All sensitive values are
+# injected at runtime via environment variables provided by Docker Compose
+# (see infra/docker/docker-compose.yml and infra/docker/.env.example).
+# =============================================================================
 spring:
   application:
     name: api-review
+
+---
+# -----------------------------------------------------------------------------
+# Profile: dev
+# Activated when SPRING_PROFILES_ACTIVE=dev (default in Docker Compose).
+# -----------------------------------------------------------------------------
+spring:
+  config:
+    activate:
+      on-profile: dev
+
+  # ---------------------------------------------------------------------------
+  # Datasource
+  # URL, username and password are injected by Docker Compose and MUST be set
+  # at runtime. No defaults are provided on purpose so that a misconfigured
+  # environment fails fast instead of silently connecting to something else.
+  # ---------------------------------------------------------------------------
+  datasource:
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+
+  # ---------------------------------------------------------------------------
+  # Flyway
+  # Enabled with the default classpath location so migrations under
+  # src/main/resources/db/migration are applied automatically at startup.
+  # ---------------------------------------------------------------------------
+  #flyway:
+  #  enabled: true
+  #  locations: classpath:db/migration
+
+  # ---------------------------------------------------------------------------
+  # DevTools
+  # Polling-based file watching so change events coming through the Docker
+  # bind mount (backend/ -> /app) are picked up reliably on Windows and
+  # macOS, where native inotify events are not always propagated across the
+  # VirtioFS / gRPC-FUSE boundary.
+  # ---------------------------------------------------------------------------
+  devtools:
+    restart:
+      enabled: true
+      poll-interval: 2s
+      quiet-period: 1s
+
+# -----------------------------------------------------------------------------
+# Spring Boot Actuator
+# Exposes the /actuator/health endpoint on the default context path so the
+# Docker healthcheck and Postman smoke tests can assert `$.status == "UP"`.
+# Details are hidden from unauthenticated callers by design; the standard
+# {"status":"UP"} JSON payload is still returned when the app is healthy.
+# -----------------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
