@@ -53,7 +53,6 @@ services:
       SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-reviews}
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
       JAVA_TOOL_OPTIONS: >-
-        -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005
         ${BACKEND_JAVA_OPTS:--Xmx1024m}
     ports:
       - "${BACKEND_HOST_PORT:-8080}:8080"
@@ -63,12 +62,12 @@ services:
       - backend-m2-cache:/root/.m2
     networks:
       - reviews-net
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/actuator/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 60s
+    #healthcheck:
+    #  test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/actuator/health || exit 1"]
+    #  interval: 10s
+    #  timeout: 5s
+    #  retries: 12
+    #  start_period: 60s
 
 # ============================================================
 # Networks

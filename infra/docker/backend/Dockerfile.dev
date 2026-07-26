@@ -41,4 +41,4 @@ EXPOSE 8080 5005
 # Arranque con Spring Boot; DevTools se activa por perfil dev y por la presencia
 # del starter en pom.xml. `fork=false` mantiene el proceso Java en el PID del
 # contenedor y permite que DevTools observe el mismo JVM.
-CMD ["./mvnw", "spring-boot:run", "-Dspring-boot.run.fork=false"]
+CMD ["./mvnw", "spring-boot:run", "-Dspring-boot.run.jvmArguments=-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005"]

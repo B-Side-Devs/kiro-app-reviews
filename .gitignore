@@ -22,5 +22,5 @@ buildNumber.properties
 infra/docker/.env
 frontend/
 docs/
-infra/docker/test/
+infra/docker/test/*
 .idea/
