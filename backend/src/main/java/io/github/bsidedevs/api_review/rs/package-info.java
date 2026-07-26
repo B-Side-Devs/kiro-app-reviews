@@ -13,8 +13,12 @@
  *   <li>Depended upon by: {@code art}, {@code notif}, {@code boff}.</li>
  * </ul>
  *
- * <p>Consumers interact with this domain exclusively through its public facade
- * (Spring beans). Internal classes are not visible to other domains.
+ * <p>Current state: the {@code ReviewSession} aggregate implements the full state
+ * machine and is exposed through {@code ReviewSessionService} (create/get/list only —
+ * {@code startRecording}, {@code completeRecording}, {@code reopen}, {@code archive}
+ * and {@code delete} exist on the entity but are not yet wired to a public operation).
+ * Authorization is a direct {@code wspr.Project} ownership check, standing in for the
+ * future {@code canAccessProject} facade call.
  *
  * <p>Cross-cutting dependencies allowed: {@code shared}.
  *

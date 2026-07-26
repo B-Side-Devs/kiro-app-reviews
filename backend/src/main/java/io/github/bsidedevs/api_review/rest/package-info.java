@@ -12,6 +12,12 @@
  * {@code rs}, {@code art}, {@code notif} and {@code boff}. Must not access domain
  * internal classes. Does not appear inside the domain DAG.
  *
+ * <p>Current state: only {@code ReviewSessionController} (create/get/list under
+ * {@code /api/v1/review-sessions}) is implemented, using a plain {@code X-User-Id}
+ * header instead of a resolved principal. The correlation, authentication and
+ * authorization filter chain, {@code Problem+JSON} error mapping and OpenAPI
+ * publication described below are not implemented yet.
+ *
  * <p>Cross-cutting dependencies allowed: {@code shared}, {@code observability},
  * {@code security}.
  *

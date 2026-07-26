@@ -12,8 +12,10 @@
  *   <li>Depended upon by: {@code rs}, {@code notif}, {@code boff}.</li>
  * </ul>
  *
- * <p>Consumers interact with this domain exclusively through its public facade
- * (Spring beans). Internal classes are not visible to other domains.
+ * <p>Current state: {@code Workspace} and {@code Project} entities plus their
+ * repositories exist; ownership is exposed via {@code Project#isOwnedBy}. Invitations,
+ * {@code canAccessProject} and the public {@code wspr} facade are not implemented yet —
+ * {@code rs} currently checks ownership directly as an MVP stand-in.
  *
  * <p>Cross-cutting dependencies allowed: {@code shared}.
  *

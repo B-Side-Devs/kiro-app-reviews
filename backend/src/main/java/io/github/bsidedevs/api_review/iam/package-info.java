@@ -9,9 +9,9 @@
  * graph. It does <strong>not</strong> depend on any other domain facade. All other
  * domain facades may depend on {@code iam}.
  *
- * <p>Consumers interact with this domain exclusively through its public facade
- * (Spring beans annotated with {@code @Service} / {@code @Component}). Internal classes
- * (repositories, entities, mappers, etc.) must not be imported by other domains.
+ * <p>Current state: only the {@code User} entity and its repository exist, backing
+ * the Review Session MVP endpoints. Authentication, sessions, credential hashing and
+ * the public {@code iam} facade are not implemented yet.
  *
  * <p>Cross-cutting dependencies allowed: {@code shared}.
  *
