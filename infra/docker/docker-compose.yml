@@ -70,6 +70,14 @@ services:
     #  start_period: 60s
 
 # ============================================================
+# Recovery note for local Flyway / DB issues
+# ============================================================
+# If a migration checksum changes or Flyway rejects the schema history,
+# use this command from the repo root to recreate the local database:
+#   docker compose -f infra/docker/docker-compose.yml down -v && docker compose -f infra/docker/docker-compose.yml up -d --build
+# This removes the local PostgreSQL volume and re-runs all migrations from scratch.
+
+# ============================================================
 # Networks
 # ============================================================
 networks:

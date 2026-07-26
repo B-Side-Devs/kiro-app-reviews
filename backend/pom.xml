@@ -54,10 +54,8 @@
 			<artifactId>spring-boot-starter-data-jpa</artifactId>
 		</dependency>
 
-		<!-- Spring Boot DevTools: enables hot reload in the dev container.
-		     runtime + optional is the standard Spring Boot recipe: DevTools stays
-		     on the runtime classpath of this app (so it is active inside the dev
-		     image) without leaking transitively to any downstream consumer. -->
+		<!-- Spring Boot DevTools: hot reload in the dev container. runtime + optional
+		     keeps it out of any downstream consumer's classpath. -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-devtools</artifactId>
@@ -65,14 +63,14 @@
 			<optional>true</optional>
 		</dependency>
 
-		<!-- Database migrations (used by future tasks) -->
+		<!-- Flyway starter: Spring Boot 4.x moved Flyway autoconfiguration out of
+		     flyway-core into this starter; without it migrations never run. -->
 		<dependency>
-			<groupId>org.flywaydb</groupId>
-			<artifactId>flyway-core</artifactId>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-flyway</artifactId>
 		</dependency>
 
-		<!-- Flyway PostgreSQL support (required by flyway-core on modern releases
-		     to resolve the postgresql database module). -->
+		<!-- PostgreSQL-specific SQL support required by flyway-core. -->
 		<dependency>
 			<groupId>org.flywaydb</groupId>
 			<artifactId>flyway-database-postgresql</artifactId>
@@ -83,6 +81,13 @@
 			<groupId>org.postgresql</groupId>
 			<artifactId>postgresql</artifactId>
 			<scope>runtime</scope>
+		</dependency>
+
+		<!-- Lombok: reduces boilerplate in entities/DTOs (getters, constructors) -->
+		<dependency>
+			<groupId>org.projectlombok</groupId>
+			<artifactId>lombok</artifactId>
+			<optional>true</optional>
 		</dependency>
 
 		<!-- Test baseline -->
