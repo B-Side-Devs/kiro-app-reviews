@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1.7
+#
+# Development image for the Reviews backend (Spring Boot on JDK 21).
+#
+# Design intent (see .kiro/specs/local-dev-environment/design.md, Artefacto 2):
+#   - The backend source tree is NEVER copied into this image at build time.
+#     It is bind-mounted at /app at runtime by docker-compose (../../backend -> /app),
+#     so edits on the host are visible inside the container without rebuild.
+#   - Hot reload is provided by spring-boot-devtools (declared in backend/pom.xml)
+#     under the `dev` profile. DevTools observes class-file changes on the classpath
+#     and restarts the application context in-place.
+#   - We run Spring Boot with `-Dspring-boot.run.fork=false` so DevTools observes
+#     the same JVM (the maven plugin does not fork a child process).
+#   - Only the Maven wrapper and pom.xml are copied at build time, purely to
+#     pre-warm the local Maven cache (~/.m2). At runtime the cache lives on the
+#     `backend-m2-cache` named volume mounted at /root/.m2, so subsequent builds
+#     are fast and offline-friendly.
+#
+# Base image is pinned (no `latest`) for reproducibility (Requirement 11.2).
+
+FROM eclipse-temurin:21-jdk-alpine
+
+# Herramientas útiles en dev:
+#   - bash: shell for scripts and `docker compose exec backend bash`
+#   - wget: required by the compose healthcheck against /actuator/health (Requirement 7.2)
+#   - git : lets Spring Boot/Actuator surface build/commit info when available
+RUN apk add --no-cache bash wget git
+
+WORKDIR /app
+
+# El código se monta como bind mount en tiempo de ejecución; NO se copia en build.
+# Sólo copiamos el wrapper de Maven y los descriptors para pre-descargar dependencias
+# y así acelerar el primer arranque (dependencias quedan en volumen backend-m2-cache).
+COPY .mvn/ .mvn/
+COPY mvnw pom.xml ./
+RUN chmod +x mvnw && ./mvnw dependency:go-offline -B || true
+
+# Puerto HTTP (8080) + puerto JDWP para debugging remoto (5005)
+EXPOSE 8080 5005
+
+# Arranque con Spring Boot; DevTools se activa por perfil dev y por la presencia
+# del starter en pom.xml. `fork=false` mantiene el proceso Java en el PID del
+# contenedor y permite que DevTools observe el mismo JVM.
+CMD ["./mvnw", "spring-boot:run", "-Dspring-boot.run.fork=false"]

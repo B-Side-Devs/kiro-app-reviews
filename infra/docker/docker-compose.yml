@@ -1,0 +1,88 @@
+# ============================================================
+# Docker Compose - Local Development Environment
+# ============================================================
+# NOTE: Frontend service is deferred to a future spec.
+# This compose file only includes postgres and backend services.
+# See requirements.md (Requirement 18.4) and ADR-0004 for details.
+# ============================================================
+
+name: ${COMPOSE_PROJECT_NAME:-reviews}
+
+services:
+  # ============================================================
+  # PostgreSQL (persistencia)
+  # ============================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: reviews-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-reviews}
+      POSTGRES_USER: ${POSTGRES_USER:-reviews}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - reviews-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-reviews} -d ${POSTGRES_DB:-reviews}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ============================================================
+  # Backend Spring Boot
+  # ============================================================
+  backend:
+    build:
+      context: ../../backend
+      dockerfile: ../infra/docker/backend/Dockerfile.dev
+    container_name: reviews-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-reviews}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-reviews}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      JAVA_TOOL_OPTIONS: >-
+        -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005
+        ${BACKEND_JAVA_OPTS:--Xmx1024m}
+    ports:
+      - "${BACKEND_HOST_PORT:-8080}:8080"
+      - "${BACKEND_DEBUG_PORT:-5005}:5005"
+    volumes:
+      - ../../backend:/app
+      - backend-m2-cache:/root/.m2
+    networks:
+      - reviews-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+# ============================================================
+# Networks
+# ============================================================
+networks:
+  reviews-net:
+    name: reviews-net
+    driver: bridge
+
+# ============================================================
+# Volumes
+# ============================================================
+volumes:
+  postgres-data:
+    name: reviews-postgres-data
+  backend-m2-cache:
+    name: reviews-backend-m2-cache
