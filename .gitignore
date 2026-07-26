@@ -23,3 +23,4 @@ infra/docker/.env
 frontend/
 docs/
 infra/docker/test/
+.idea/
