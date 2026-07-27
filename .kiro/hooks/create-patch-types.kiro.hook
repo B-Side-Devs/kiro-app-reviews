@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "Create Patch Types",
+  "description": "Create patch domain types",
+  "version": "1",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "echo \"test\""
+  }
+}

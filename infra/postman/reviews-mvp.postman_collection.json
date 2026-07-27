@@ -1,56 +1,543 @@
 {
   "info": {
+    "_postman_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
     "name": "Reviews MVP - Review Sessions",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "baseUrl", "value": "http://localhost:8080" },
-    { "key": "userId", "value": "018e0c5a-7b3f-7000-8000-000000000001" },
-    { "key": "projectId", "value": "018e0c5c-2b3c-7000-8000-000000000001" },
-    { "key": "sessionId", "value": "" }
+    { "key": "base_url", "value": "" },
+    { "key": "seed_project_id", "value": "018e0c5c-2b3c-7000-8000-000000000001" },
+    { "key": "seed_owner_admin_id", "value": "018e0c5a-7b3f-7000-8000-000000000001" },
+    { "key": "seed_client_id", "value": "018e0c5a-7b3f-7000-8000-000000000002" },
+    { "key": "seed_other_admin_id", "value": "018e0c5a-7b3f-7000-8000-000000000003" },
+    { "key": "current_review_session_id", "value": "" }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Guard: stop execution if current_review_session_id is missing for requests that need it",
+          "const sessionId = pm.collectionVariables.get(\"current_review_session_id\");",
+          "const requestName = pm.info.requestName;",
+          "const requiresSession = [",
+          "  \"Get Review Session\",",
+          "  \"List Active Review Sessions\",",
+          "  \"Update Metadata\",",
+          "  \"Start Recording\",",
+          "  \"Complete Recording\",",
+          "  \"Reopen Session\",",
+          "  \"Archive Session\",",
+          "  \"Delete Session\",",
+          "  \"Rejection - Transition Conflict\",",
+          "  \"Rejection - Non-Owner Delete\",",
+          "  \"Rejection - Missing Identity Header\"",
+          "];",
+          "if (requiresSession.includes(requestName) && (!sessionId || sessionId === \"\")) {",
+          "  postman.setNextRequest(null);",
+          "}"
+        ]
+      }
+    }
   ],
   "item": [
     {
-      "name": "Health check",
-      "request": {
-        "method": "GET",
-        "url": "{{baseUrl}}/actuator/health"
-      }
-    },
-    {
-      "name": "Create Review Session",
-      "request": {
-        "method": "POST",
-        "header": [
-          { "key": "X-User-Id", "value": "{{userId}}" },
-          { "key": "Content-Type", "value": "application/json" }
-        ],
-        "url": "{{baseUrl}}/api/v1/review-sessions",
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"projectId\": \"{{projectId}}\"\n}"
+      "name": "Smoke",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/actuator/health",
+              "host": ["{{base_url}}"],
+              "path": ["actuator", "health"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
-      }
+      ]
     },
     {
-      "name": "Get Review Session",
-      "request": {
-        "method": "GET",
-        "header": [
-          { "key": "X-User-Id", "value": "{{userId}}" }
-        ],
-        "url": "{{baseUrl}}/api/v1/review-sessions/{{sessionId}}"
-      }
-    },
-    {
-      "name": "List Review Sessions by Project",
-      "request": {
-        "method": "GET",
-        "header": [
-          { "key": "X-User-Id", "value": "{{userId}}" }
-        ],
-        "url": "{{baseUrl}}/api/v1/review-sessions?projectId={{projectId}}"
-      }
+      "name": "Review Sessions",
+      "item": [
+        {
+          "name": "Create Review Session",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-User-Id", "value": "{{seed_owner_admin_id}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/projects/{{seed_project_id}}/review-sessions",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "projects", "{{seed_project_id}}", "review-sessions"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"My Review Session\",\n  \"description\": \"Testing the full lifecycle\",\n  \"targetUrl\": \"https://example.com\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 201\", function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "pm.test(\"Save session ID\", function () {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set(\"current_review_session_id\", body.reviewSessionId);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Review Session",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-User-Id", "value": "{{seed_owner_admin_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/review-sessions/{{current_review_session_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "review-sessions", "{{current_review_session_id}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"State is DRAFT\", function () {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.state).to.eql(\"DRAFT\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Active Review Sessions",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-User-Id", "value": "{{seed_owner_admin_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/projects/{{seed_project_id}}/review-sessions",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "projects", "{{seed_project_id}}", "review-sessions"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"Response is an array\", function () {",
+                  "    pm.expect(pm.response.json()).to.be.an(\"array\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Metadata",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "X-User-Id", "value": "{{seed_owner_admin_id}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/review-sessions/{{current_review_session_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "review-sessions", "{{current_review_session_id}}"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Updated Review Session\",\n  \"description\": \"Updated description\",\n  \"targetUrl\": \"https://updated-example.com\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"State remains DRAFT\", function () {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.state).to.eql(\"DRAFT\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Start Recording",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-User-Id", "value": "{{seed_owner_admin_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/review-sessions/{{current_review_session_id}}/start",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "review-sessions", "{{current_review_session_id}}", "start"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"State is RECORDING\", function () {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.state).to.eql(\"RECORDING\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Complete Recording",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-User-Id", "value": "{{seed_owner_admin_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/review-sessions/{{current_review_session_id}}/complete",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "review-sessions", "{{current_review_session_id}}", "complete"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"State is COMPLETED\", function () {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.state).to.eql(\"COMPLETED\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reopen Session",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-User-Id", "value": "{{seed_owner_admin_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/review-sessions/{{current_review_session_id}}/reopen",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "review-sessions", "{{current_review_session_id}}", "reopen"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"State is REOPENED\", function () {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.state).to.eql(\"REOPENED\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Archive Session",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Re-start and re-complete to get back to COMPLETED before archiving",
+                  "const sessionId = pm.collectionVariables.get(\"current_review_session_id\");",
+                  "const baseUrl = pm.environment.get(\"base_url\") || \"http://localhost:8080\";",
+                  "const userId = pm.collectionVariables.get(\"seed_owner_admin_id\");",
+                  "",
+                  "pm.sendRequest({",
+                  "    url: baseUrl + \"/api/v1/review-sessions/\" + sessionId + \"/start\",",
+                  "    method: \"POST\",",
+                  "    header: [{ key: \"X-User-Id\", value: userId }]",
+                  "}, function(err1, resp1) {",
+                  "    pm.sendRequest({",
+                  "        url: baseUrl + \"/api/v1/review-sessions/\" + sessionId + \"/complete\",",
+                  "        method: \"POST\",",
+                  "        header: [{ key: \"X-User-Id\", value: userId }]",
+                  "    }, function(err2, resp2) {",
+                  "        // now the main archive request fires",
+                  "    });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"State is ARCHIVED\", function () {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.state).to.eql(\"ARCHIVED\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-User-Id", "value": "{{seed_owner_admin_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/review-sessions/{{current_review_session_id}}/archive",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "review-sessions", "{{current_review_session_id}}", "archive"]
+            }
+          }
+        },
+        {
+          "name": "Delete Session",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "X-User-Id", "value": "{{seed_owner_admin_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/review-sessions/{{current_review_session_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "review-sessions", "{{current_review_session_id}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 204\", function () {",
+                  "    pm.response.to.have.status(204);",
+                  "});",
+                  "pm.test(\"Clear session ID after delete\", function () {",
+                  "    pm.collectionVariables.set(\"current_review_session_id\", \"\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rejections",
+          "item": [
+            {
+              "name": "Rejection - Transition Conflict",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Create a fresh session and advance it past DRAFT for conflict test",
+                      "const baseUrl = pm.environment.get(\"base_url\") || \"http://localhost:8080\";",
+                      "const projectId = pm.collectionVariables.get(\"seed_project_id\");",
+                      "const userId = pm.collectionVariables.get(\"seed_owner_admin_id\");",
+                      "",
+                      "pm.sendRequest({",
+                      "    url: baseUrl + \"/api/v1/projects/\" + projectId + \"/review-sessions\",",
+                      "    method: \"POST\",",
+                      "    header: [",
+                      "        { key: \"X-User-Id\", value: userId },",
+                      "        { key: \"Content-Type\", value: \"application/json\" }",
+                      "    ],",
+                      "    body: { mode: \"raw\", raw: JSON.stringify({ name: \"Conflict test session\" }) }",
+                      "}, function(err, resp) {",
+                      "    if (!err && resp.code === 201) {",
+                      "        const sid = resp.json().reviewSessionId;",
+                      "        pm.collectionVariables.set(\"conflict_session_id\", sid);",
+                      "        // Advance to RECORDING",
+                      "        pm.sendRequest({",
+                      "            url: baseUrl + \"/api/v1/review-sessions/\" + sid + \"/start\",",
+                      "            method: \"POST\",",
+                      "            header: [{ key: \"X-User-Id\", value: userId }]",
+                      "        }, function() {",
+                      "            // Complete it",
+                      "            pm.sendRequest({",
+                      "                url: baseUrl + \"/api/v1/review-sessions/\" + sid + \"/complete\",",
+                      "                method: \"POST\",",
+                      "                header: [{ key: \"X-User-Id\", value: userId }]",
+                      "            }, function() {});",
+                      "        });",
+                      "    }",
+                      "});"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Status is 409\", function () {",
+                      "    pm.response.to.have.status(409);",
+                      "});",
+                      "pm.test(\"Content-Type is application/problem+json\", function () {",
+                      "    pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\");",
+                      "});",
+                      "pm.test(\"Response contains currentState\", function () {",
+                      "    const body = pm.response.json();",
+                      "    pm.expect(body).to.have.property(\"currentState\");",
+                      "});",
+                      "pm.test(\"Response contains correlationId\", function () {",
+                      "    const body = pm.response.json();",
+                      "    pm.expect(body).to.have.property(\"correlationId\");",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "X-User-Id", "value": "{{seed_owner_admin_id}}" }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/review-sessions/{{conflict_session_id}}/start",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "v1", "review-sessions", "{{conflict_session_id}}", "start"]
+                }
+              }
+            },
+            {
+              "name": "Rejection - Non-Owner Delete",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Status is 404\", function () {",
+                      "    pm.response.to.have.status(404);",
+                      "});",
+                      "pm.test(\"Content-Type is application/problem+json\", function () {",
+                      "    pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\");",
+                      "});",
+                      "pm.test(\"Response contains correlationId\", function () {",
+                      "    const body = pm.response.json();",
+                      "    pm.expect(body).to.have.property(\"correlationId\");",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  { "key": "X-User-Id", "value": "{{seed_other_admin_id}}" }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/review-sessions/{{conflict_session_id}}",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "v1", "review-sessions", "{{conflict_session_id}}"]
+                }
+              }
+            },
+            {
+              "name": "Rejection - Missing Identity Header",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Status is 401\", function () {",
+                      "    pm.response.to.have.status(401);",
+                      "});",
+                      "pm.test(\"Content-Type is application/problem+json\", function () {",
+                      "    pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\");",
+                      "});",
+                      "pm.test(\"Response contains correlationId\", function () {",
+                      "    const body = pm.response.json();",
+                      "    pm.expect(body).to.have.property(\"correlationId\");",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/review-sessions/{{conflict_session_id}}",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "v1", "review-sessions", "{{conflict_session_id}}"]
+                }
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

@@ -1,5 +1,6 @@
 package io.github.bsidedevs.api_review.wspr;
 
+import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
@@ -26,12 +27,16 @@ public class Project {
 
     private Instant createdAt;
 
+    @Column(nullable = false)
+    private boolean blocked;
+
     public Project(UUID projectId, UUID workspaceId, UUID ownerAdminId, String displayName) {
         this.projectId = projectId;
         this.workspaceId = workspaceId;
         this.ownerAdminId = ownerAdminId;
         this.displayName = displayName;
         this.createdAt = Instant.now();
+        this.blocked = false;
     }
 
     public boolean isOwnedBy(UUID userId) {
