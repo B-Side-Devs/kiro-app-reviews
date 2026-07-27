@@ -1,0 +1,17 @@
+# Docker build context exclusions for the local development environment.
+#
+# Purpose: keep image builds fast and reproducible by excluding host-only
+# artifacts (VCS metadata, IDE settings, build outputs, secrets) from the
+# build contexts consumed by Docker Compose. Anything listed here is never
+# uploaded to the Docker daemon nor baked into an image layer.
+#
+# Scope: applied globally to every build context under infra/docker/.
+# Requirement 11.3: no host-only artifacts leak into the dev images.
+
+**/.git
+# DEFERRED: reactivar cuando se reintroduzca el Servicio_Frontend.
+# **/node_modules
+**/target
+**/.env
+**/.idea
+**/.vscode

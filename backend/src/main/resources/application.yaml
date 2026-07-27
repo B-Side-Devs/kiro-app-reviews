@@ -1,3 +1,67 @@
+# =============================================================================
+# Spring Boot configuration
+#
+# Uses YAML document separators (`---`) for profile-scoped config. The first
+# document applies to every profile; later documents activate only when
+# `spring.config.activate.on-profile` matches the active profile.
+#
+# Profiles:
+#   - dev -> local development (Docker Compose). Datasource, Flyway, Actuator
+#            and DevTools settings live below.
+#
+# NEVER commit literal credential values here. Sensitive values are injected
+# at runtime via Docker Compose (see infra/docker/docker-compose.yml and
+# infra/docker/.env.example).
+# =============================================================================
 spring:
   application:
     name: api-review
+
+---
+# -----------------------------------------------------------------------------
+# Profile: dev — activated by SPRING_PROFILES_ACTIVE=dev (Compose default)
+# -----------------------------------------------------------------------------
+spring:
+  config:
+    activate:
+      on-profile: dev
+
+  # Injected by Docker Compose; no defaults so a misconfigured env fails fast.
+  datasource:
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+
+  # Validate schema on startup; Flyway owns schema creation (ddl-auto never creates).
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+
+  # Migrations under src/main/resources/db/migration, applied on startup.
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  # Polling avoids missed events across the Docker bind mount on Windows/macOS.
+  devtools:
+    restart:
+      enabled: true
+      poll-interval: 2s
+      quiet-period: 1s
+
+# -----------------------------------------------------------------------------
+# Actuator: /actuator/health only, used by the Docker healthcheck and Postman
+# smoke tests ({"status":"UP"}). Details hidden from unauthenticated callers.
+# -----------------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never

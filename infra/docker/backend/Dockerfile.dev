@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1.7
+#
+# Development image for the Reviews backend (Spring Boot on JDK 21).
+#
+# Design intent (see .kiro/specs/local-dev-environment/design.md, Artefacto 2):
+#   - The source tree is NEVER copied at build time; it's bind-mounted at /app
+#     by docker-compose (../../backend -> /app), so host edits are visible
+#     inside the container without a rebuild.
+#   - Hot reload is provided by spring-boot-devtools (backend/pom.xml) under
+#     the `dev` profile: it watches the classpath and restarts in-place.
+#   - Only the Maven wrapper and pom.xml are copied at build time, to pre-warm
+#     the cache. At runtime the cache lives in the `backend-m2-cache` named
+#     volume mounted at /root/.m2.
+#
+# Base image is pinned (no `latest`) for reproducibility (Requirement 11.2).
+
+FROM eclipse-temurin:21-jdk-alpine
+
+# bash: shell access; wget: used by the compose healthcheck (Requirement 7.2);
+# git: lets Actuator surface build/commit info when available.
+RUN apk add --no-cache bash wget git
+
+WORKDIR /app
+
+# Code is bind-mounted at runtime, not copied here. Copying only the Maven
+# wrapper + pom.xml lets dependencies pre-download into backend-m2-cache.
+COPY .mvn/ .mvn/
+COPY mvnw pom.xml ./
+RUN chmod +x mvnw && ./mvnw dependency:go-offline -B || true
+
+# HTTP (8080) + JDWP remote debug (5005)
+EXPOSE 8080 5005
+
+CMD ["./mvnw", "spring-boot:run", "-Dspring-boot.run.jvmArguments=-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005"]
