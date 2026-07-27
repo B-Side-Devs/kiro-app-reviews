@@ -28,6 +28,16 @@ public abstract sealed class Id<T extends Id<T>> implements Serializable, Compar
         return value;
     }
 
+    /**
+     * Gets the underlying UUID value.
+     * Public for use by domain service classes that need to interact with persistence layers.
+     *
+     * @return the underlying UUID value
+     */
+    public UUID getValue() {
+        return value;
+    }
+
     @Override
     public int compareTo(T other) {
         return this.value.compareTo(other.value);

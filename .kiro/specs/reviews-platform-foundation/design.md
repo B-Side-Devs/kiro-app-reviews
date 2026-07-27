@@ -6,7 +6,7 @@ Este documento constituye el **diseño de fundación** de la plataforma Reviews.
 
 La plataforma se construye como un **monolito Spring Boot 4.x sobre Java 21**, organizado internamente por **paquetes de dominio**, más un **frontend SPA** y una **Extensión Autorizada** de navegador. El backend es un único módulo Maven que se despliega como un proceso; su estructura interna agrupa los dominios en paquetes Java bajo la raíz `io.github.bsidedevs.api_review` (`iam`, `wspr`, `rs`, `art`, `notif`, `boff`, más los transversales `shared`, `rest`, `observability`, `security`). Los dominios se comunican entre sí mediante **fachadas** —interfaces o clases de servicio expuestas como beans Spring por el dominio proveedor—, sin importar clases internas de otros dominios. Todos los servicios de dominio se exponen hacia el exterior mediante una API REST documentada con OpenAPI (Requirement 13), publican logs estructurados con identificador de correlación (Requirement 17) y aplican controles de autenticación y autorización sobre cada operación (Requirement 18).
 
-La unidad principal del dominio es la **Review Session**, un agregado con ciclo de vida propio (`Draft → Recording → Completed ↔ Reopened → Archived → Deleted`) que agrupa todos los artefactos capturados durante una revisión. La Review Session se enmarca en la jerarquía `Workspace → Proyecto → Review Session`, y su acceso se rige por dos coordenadas: **rol** del usuario (Administrador de Proyecto, Cliente, Administrador de Plataforma) y **relación** con el Proyecto asociado (propiedad para Administrador de Proyecto, Invitación aceptada para Cliente). Esta doble llave —rol más relación— es la piedra angular del modelo de autorización y aparece de forma consistente en todos los módulos.
+La unidad principal del dominio es la **Review Session**, un agregado con ciclo de vida propio y **estrictamente acotado** (`Draft → Recording → Completed → Reopened → Recording → Completed`, con `Archived` alcanzable únicamente desde `Completed`) que agrupa todos los artefactos capturados durante una revisión. Los artefactos de gran volumen (grabación rrweb, escena Excalidraw) se ingestan mediante un **protocolo de subida por chunks** idempotente descrito en el `Modelo 8`. La Review Session se enmarca en la jerarquía `Workspace → Proyecto → Review Session`, y su acceso se rige por dos coordenadas: **rol** del usuario (Administrador de Proyecto, Cliente, Administrador de Plataforma) y **relación** con el Proyecto asociado (propiedad para Administrador de Proyecto, Invitación aceptada para Cliente). Esta doble llave —rol más relación— es la piedra angular del modelo de autorización y aparece de forma consistente en todos los módulos.
 
 Este spec se alinea con el spec previo `local-dev-environment` (Docker Compose para backend, PostgreSQL, frontend) en cuanto a infraestructura de desarrollo, y sirve como marco para los specs por módulo que lo sucedan (por ejemplo, `iam`, `workspaces-projects`, `review-session-core`, `artifacts-rrweb`, `notifications`, `backoffice`).
 
@@ -340,9 +340,9 @@ FACADE rs
   FUNCTION createSession(user: AuthenticatedPrincipal, projectId: ProjectId): Result<ReviewSession, Error>
   FUNCTION startRecording(user: AuthenticatedPrincipal, id: ReviewSessionId): Result<ReviewSession, Error>
   FUNCTION completeRecording(user: AuthenticatedPrincipal, id: ReviewSessionId): Result<ReviewSession, Error>
-  FUNCTION reopen(admin: AuthenticatedPrincipal, id: ReviewSessionId): Result<ReviewSession, Error>
-  FUNCTION archive(admin: AuthenticatedPrincipal, id: ReviewSessionId): Result<ReviewSession, Error>
-  FUNCTION delete(admin: AuthenticatedPrincipal, id: ReviewSessionId): Result<Unit, Error>
+  FUNCTION reopen(admin: AuthenticatedPrincipal, id: ReviewSessionId): Result<ReviewSession, Error>   // sólo desde COMPLETED → REOPENED
+  FUNCTION archive(admin: AuthenticatedPrincipal, id: ReviewSessionId): Result<ReviewSession, Error>  // sólo desde COMPLETED → ARCHIVED
+  FUNCTION delete(admin: AuthenticatedPrincipal, id: ReviewSessionId): Result<Unit, Error>            // ⚠ OPEN QUESTION: ver Modelo 2, «Transiciones hacia DELETED»
 
   // Consulta atómica del estado (usada por otros dominios, ej. art para decidir si aceptar captura)
   FUNCTION currentState(id: ReviewSessionId): Optional<ReviewSessionState>
@@ -354,10 +354,12 @@ END FACADE
 
 **Reglas invariantes**:
 - Toda Review Session tiene exactamente uno de los seis estados en cualquier instante (Requirement 8.1).
-- Toda transición de estado se valida contra la matriz de transiciones (ver `Data Models`). Transiciones no válidas devuelven error sin modificar estado.
-- `DRAFT` es el único estado inicial (Requirement 8.2).
-- `DELETED` es un estado terminal absorbente: ninguna transición sale de `DELETED`.
-- Sólo el Administrador de Proyecto propietario del `Project` asociado puede cerrar, reabrir o eliminar una Review Session (Requirements 7.5, 7.6, 8.5, 8.7).
+- Toda transición de estado se valida contra la matriz de transiciones (ver `Data Models`, Modelo 2). Transiciones no válidas devuelven error sin modificar estado.
+- `DRAFT` es el único estado inicial (Requirement 8.2), y `DRAFT → RECORDING` es la **única** transición que sale de `DRAFT`.
+- `ARCHIVED` tiene exactamente **una** arista de entrada: `COMPLETED → ARCHIVED`. No se archiva desde `DRAFT`, ni desde `RECORDING`, ni desde `REOPENED`.
+- `REOPENED` no vuelve directamente a `COMPLETED`: el camino de re-cierre es `REOPENED → RECORDING → COMPLETED`.
+- `DELETED` es un estado terminal absorbente: ninguna transición sale de `DELETED`. Las aristas de **entrada** a `DELETED` están pendientes de confirmación (ver Modelo 2, «Transiciones hacia DELETED — OPEN QUESTION»).
+- Sólo el Administrador de Proyecto propietario del `Project` asociado puede cerrar, reabrir, archivar o eliminar una Review Session (Requirements 7.5, 7.6, 8.5, 8.7).
 - Cuando la persistencia de artefactos falla al finalizar la captura, la transición `RECORDING → COMPLETED` se bloquea sobre esa sesión concreta, sin afectar a otras sesiones (Requirement 10.2).
 
 ### Componente 4: `art` (artefactos)
@@ -415,7 +417,59 @@ FACADE art
   FUNCTION updateOwnAnnotation(user: AuthenticatedPrincipal, artifactId: ArtifactId, patch: AnnotationPatch): Result<Artifact, Error>
   FUNCTION deleteOwnAnnotation(user: AuthenticatedPrincipal, artifactId: ArtifactId): Result<Unit, Error>
 
+  // ---- Ingesta por chunks de artefactos de gran volumen (ver Modelo 8) ----
+
+  FUNCTION openUploadSession(
+      user: AuthenticatedPrincipal,
+      sessionId: ReviewSessionId,
+      artifactId: ArtifactId,          // identidad del artefacto destino: espacio de secuencias propio
+      kind: ArtifactKind
+  ): Result<UploadSession, Error>       // estado inicial OPEN
+
+  FUNCTION putChunk(
+      user: AuthenticatedPrincipal,
+      sessionId: ReviewSessionId,
+      artifactId: ArtifactId,
+      sequence: ChunkSequence,          // clave de idempotencia = (reviewSessionId, artifactId, sequence)
+      checksum: Checksum,               // REQUERIDO: es el discriminador de idempotencia
+      payload: Bytes
+  ): Result<ChunkAck, ChunkError>       // ChunkError ∈ { CHUNK_CONTENT_MISMATCH, UPLOAD_FINALIZING, UPLOAD_SESSION_FINALIZED }
+
+  FUNCTION finalizeUpload(
+      user: AuthenticatedPrincipal,
+      sessionId: ReviewSessionId,
+      artifactId: ArtifactId,
+      expected: ExpectedUploadSummary   // { totalChunks, finalChecksum }
+  ): Result<UploadSession, FinalizeError>  // FinalizeError ∈ { MISSING_CHUNKS, FINAL_CHECKSUM_MISMATCH }
+
+  FUNCTION abortUpload(user: AuthenticatedPrincipal, sessionId: ReviewSessionId, artifactId: ArtifactId): Result<Unit, Error>
+
+  FUNCTION getUploadStatus(user: AuthenticatedPrincipal, sessionId: ReviewSessionId, artifactId: ArtifactId): Result<UploadSessionStatus, AccessError>
+
 END FACADE
+```
+
+**Estructuras de la ingesta por chunks** (detalle completo en `Modelo 8`):
+
+```pascal
+ENUM UploadSessionState = { OPEN, FINALIZING, FINALIZED, ABORTED }
+
+STRUCTURE ExpectedUploadSummary
+  totalChunks: Integer          // p.ej. 312
+  finalChecksum: Checksum       // checksum global del contenido completo
+END STRUCTURE
+
+STRUCTURE ChunkAck
+  sequence: ChunkSequence
+  duplicate: Boolean            // true ⇒ reintento idempotente, no se escribió nada
+END STRUCTURE
+
+STRUCTURE UploadSessionStatus
+  state: UploadSessionState
+  receivedChunks: Integer
+  missingSequences: List<ChunkSequence>   // no vacío ⇒ finalize devolvería MISSING_CHUNKS
+  alreadyFinalized: Boolean
+END STRUCTURE
 ```
 
 **Dependencias**: paquete `art` → fachada del paquete `rs` (para consultar estado y validar acceso) y fachada del paquete `iam`.
@@ -426,6 +480,8 @@ END FACADE
 - Sólo el `authorUserId` puede modificar o eliminar los artefactos de tipo `COMMENT`, `TEXT_NOTE`, `VOICE_NOTE` cuya autoría le pertenece (Requirements 9.3, 9.4).
 - Los artefactos de captura (`RRWEB_RECORDING`, `DOM_SNAPSHOT`, `TIMELINE_EVENT`, `BROWSER_METADATA`) sólo pueden crearse cuando la sesión está en estado `RECORDING` (Requirement 8.8).
 - Los artefactos de anotación (`COMMENT`, `TEXT_NOTE`, `VOICE_NOTE`, `EXCALIDRAW_SCENE`) pueden crearse cuando la sesión está en estado `RECORDING`, `COMPLETED` o `REOPENED` (Requirements 8.8, 8.9). No pueden crearse cuando está en `DRAFT`, `ARCHIVED` o `DELETED`.
+- Cada upload session pertenece a **un** `(reviewSessionId, artifactId)`. La clave de idempotencia de un chunk es la terna `(reviewSessionId, artifactId, sequence)`: cada artefacto de la Review Session dispone de su **propio espacio de secuencias independiente** (Modelo 8.5).
+- Una upload session en estado `FINALIZED` es **inmutable**: no admite nuevos chunks ni modificación del contenido de los ya recibidos.
 
 ### Componente 5: `notif` (notificaciones)
 
@@ -535,8 +591,25 @@ END SERVICE
 **Convenciones REST** (a formalizar en spec del paquete `rest`):
 
 - Rutas por recurso: `/workspaces`, `/projects/{projectId}`, `/projects/{projectId}/review-sessions`, `/review-sessions/{sessionId}/artifacts`, `/notifications`, `/admin/users`, `/admin/metrics`.
-- Verbos HTTP semánticos: `GET`, `POST`, `PATCH`, `DELETE`. Transiciones de estado no idempotentes se modelan como `POST` a sub-recursos: `POST /review-sessions/{id}/start`, `.../complete`, `.../reopen`, `.../archive`.
-- Códigos de estado: `200/201/204` en éxito; `400` validación; `401` autenticación; `403` autorización; `404` no existe / no accesible (evitando revelar existencia); `409` transición inválida; `422` regla de dominio violada; `5xx` errores no controlados con `correlationId` en el body.
+- Verbos HTTP semánticos: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`. Transiciones de estado no idempotentes se modelan como `POST` a sub-recursos: `POST /review-sessions/{id}/start`, `.../complete`, `.../reopen`, `.../archive`. Con la máquina de estados del Modelo 2, `.../reopen` sólo es aceptable desde `COMPLETED` y `.../archive` sólo desde `COMPLETED`; el re-cierre tras una reapertura exige `.../start` (`REOPENED → RECORDING`) y después `.../complete`.
+- Ingesta por chunks (Modelo 8), con `PUT` idempotente sobre el chunk:
+  - `POST   /review-sessions/{sessionId}/artifacts/{artifactId}/upload` → abre la upload session (`OPEN`).
+  - `PUT    /review-sessions/{sessionId}/artifacts/{artifactId}/chunks/{sequence}` → sube un chunk (header `X-Chunk-Checksum` **obligatorio**).
+  - `POST   /review-sessions/{sessionId}/artifacts/{artifactId}/upload/finalize` → body `{ "totalChunks": n, "finalChecksum": "..." }`.
+  - `POST   /review-sessions/{sessionId}/artifacts/{artifactId}/upload/abort` → `ABORTED`.
+  - `GET    /review-sessions/{sessionId}/artifacts/{artifactId}/upload` → estado, chunks recibidos y secuencias faltantes.
+- Códigos de estado: `200/201/204` en éxito; `400` validación; `401` autenticación; `403` autorización; `404` no existe / no accesible (evitando revelar existencia); `409` transición inválida o conflicto de protocolo de subida; `422` regla de dominio violada; `5xx` errores no controlados con `correlationId` en el body.
+- Códigos de error canónicos del protocolo de subida (campo `code` del Problem+JSON):
+
+  | `code`                     | HTTP  | Significado                                                                        |
+  |----------------------------|:-----:|------------------------------------------------------------------------------------|
+  | `CHUNK_CONTENT_MISMATCH`   | 409   | Ya existe un chunk con esa `sequence` pero su contenido (checksum) difiere          |
+  | `MISSING_CHUNKS`           | 409   | No se puede finalizar porque falta uno o más chunks                                 |
+  | `UPLOAD_FINALIZING`        | 409   | La upload session se está validando y no acepta nuevos chunks                        |
+  | `UPLOAD_SESSION_FINALIZED` | 409   | La upload session ya está finalizada y es completamente inmutable                    |
+  | `FINAL_CHECKSUM_MISMATCH`  | 422 ⚠ | El checksum global enviado en `finalize` no coincide con el contenido ensamblado     |
+
+  ⚠ `FINAL_CHECKSUM_MISMATCH` es una **decisión pendiente de confirmación** (código, `409` vs `422`, y estado resultante). Ver Modelo 8.4.
 - Paginación cursor-based en listados grandes; formato estable entre endpoints.
 
 ### Componente 8: Observability (paquete transversal `observability`)
@@ -695,18 +768,11 @@ Máquina de estados formal (Requirement 8):
 ```mermaid
 stateDiagram-v2
     [*] --> Draft: createSession
-    Draft --> Recording: startRecording
+    Draft --> Recording: startRecording<br/>(única salida de Draft)
     Recording --> Completed: completeRecording<br/>(if persistence OK)
     Completed --> Reopened: reopen<br/>(only Project Admin owner)
-    Reopened --> Completed: completeRecording<br/>(re-close)
-    Completed --> Archived: archive
-    Reopened --> Archived: archive
-    Draft --> Archived: archive
-    Completed --> Deleted: delete<br/>(only Project Admin owner)
-    Reopened --> Deleted: delete
-    Archived --> Deleted: delete
-    Draft --> Deleted: delete
-    Deleted --> [*]
+    Reopened --> Recording: startRecording<br/>(re-captura)
+    Completed --> Archived: archive<br/>(única entrada a Archived)
 
     note right of Recording
       Captura de artefactos habilitada
@@ -718,43 +784,63 @@ stateDiagram-v2
     end note
     note right of Reopened
       Anotaciones permitidas
-      (Req 8.9)
+      (Req 8.9).
+      El re-cierre pasa por Recording:
+      Reopened → Recording → Completed
     end note
-    note left of Deleted
-      Estado absorbente.
-      Ninguna transición sale.
-      Restricciones aplicadas
-      inmediatamente al transicionar
-      (Req 8.11).
+    note right of Archived
+      Única entrada: desde Completed.
+      No se archiva desde Draft,
+      Recording ni Reopened.
     end note
 ```
 
-**Matriz de transiciones válidas**:
+> **Estado `Deleted`**: el enum lo conserva (Requirement 8.1 lo exige), pero **sus aristas de entrada no están definidas en este diagrama** porque son una pregunta abierta. Ver «Transiciones hacia DELETED — OPEN QUESTION» más abajo. `Deleted` sigue siendo absorbente: ninguna transición sale de él, y al alcanzarlo las restricciones de modificación y de listado se aplican de inmediato (Requirement 8.11).
+
+**Matriz de transiciones válidas** (conjunto completo y cerrado: todo lo que no aparece con ✓ está prohibido):
 
 | Desde \ A     | Draft | Recording | Completed | Reopened | Archived | Deleted |
 |---------------|:-----:|:---------:|:---------:|:--------:|:--------:|:-------:|
-| **Draft**     |   —   |     ✓     |     ✗     |    ✗     |    ✓     |    ✓    |
-| **Recording** |   ✗   |     —     |    ✓*     |    ✗     |    ✗     |    ✗    |
-| **Completed** |   ✗   |     ✗     |     —     |    ✓†    |    ✓     |    ✓†   |
-| **Reopened**  |   ✗   |     ✗     |    ✓*     |    —     |    ✓     |    ✓†   |
-| **Archived**  |   ✗   |     ✗     |     ✗     |    ✗     |    —     |    ✓†   |
+| **Draft**     |   —   |     ✓     |     ✗     |    ✗     |    ✗     |    ?    |
+| **Recording** |   ✗   |     —     |    ✓*     |    ✗     |    ✗     |    ?    |
+| **Completed** |   ✗   |     ✗     |     —     |    ✓†    |    ✓†    |    ?    |
+| **Reopened**  |   ✗   |     ✓     |     ✗     |    —     |    ✗     |    ?    |
+| **Archived**  |   ✗   |     ✗     |     ✗     |    ✗     |    —     |    ?    |
 | **Deleted**   |   ✗   |     ✗     |     ✗     |    ✗     |    ✗     |    —    |
 
-- ✓ = transición permitida en general.
-- ✗ = transición rechazada; el comando retorna error sin modificar estado.
+- ✓ = transición permitida.
+- ✗ = transición rechazada; el comando retorna error de transición inválida (`409`) sin modificar estado.
+- ? = **sin definir**: pendiente de confirmación (ver OPEN QUESTION más abajo). Hasta que se confirme, el diseño **no autoriza** ninguna transición hacia `Deleted`.
 - \* = requiere que la persistencia de artefactos capturados en `Recording` haya completado con éxito (Requirement 10.2).
 - † = requiere que el invocador sea el Administrador de Proyecto propietario del Proyecto asociado (Requirements 7.5, 7.6, 8.5, 8.7).
 
+Consecuencias explícitas de esta matriz, respecto de versiones previas de este diseño:
+
+- `DRAFT → RECORDING` es la **única** salida de `DRAFT`. `DRAFT → ARCHIVED` y `DRAFT → DELETED` **ya no** forman parte de la matriz.
+- `REOPENED → COMPLETED` **ya no** existe. El re-cierre es `REOPENED → RECORDING → COMPLETED`, es decir: reabrir habilita una nueva fase de captura antes de volver a cerrar.
+- `REOPENED → ARCHIVED` y `RECORDING → ARCHIVED` **ya no** existen. `ARCHIVED` tiene exactamente una arista de entrada: `COMPLETED → ARCHIVED`.
+- El grafo resultante es un ciclo controlado `Completed → Reopened → Recording → Completed` con un único sumidero declarado (`Archived`).
+
+**Transiciones hacia DELETED — OPEN QUESTION (pendiente de confirmación con el usuario)**
+
+El estado `Deleted` permanece en el enum porque el Requirement 8.1 lo enumera y el Requirement 8.7 describe la eliminación por parte del Administrador de Proyecto propietario. Sin embargo, el conjunto de transiciones autorizado en este diseño **no incluye ninguna arista de entrada a `Deleted`**. Preguntas a resolver antes de implementar `rs.delete(...)`:
+
+1. ¿Desde qué estados se puede eliminar una Review Session? (`Draft`? `Completed`? `Archived`? ¿únicamente `Archived`?)
+2. ¿La eliminación es una **transición de estado** (soft delete a `Deleted`, con el registro conservado y excluido de listados activos) o una **operación de borrado físico** separada de la máquina de estados (hard delete, el registro desaparece)?
+3. Si es soft delete, ¿se admite eliminar una sesión en `Recording` (con una upload session en curso) o hay que completar/abortar primero?
+
+Mientras esta pregunta esté abierta, `rs.delete(...)` queda especificado como **no implementable** y las Properties 5 y 6 se evalúan sobre la matriz sin aristas hacia `Deleted`.
+
 **Operaciones habilitadas por estado**:
 
-| Estado      | Captura de artefactos | Anotaciones (comentarios/notas) | Aparece en listado activo | Modificable |
-|-------------|:---------------------:|:-------------------------------:|:-------------------------:|:-----------:|
-| Draft       |          ✗            |               ✗                 |             ✓             |      ✓      |
-| Recording   |          ✓            |               ✓                 |             ✓             |      ✓      |
-| Completed   |          ✗            |               ✓                 |             ✓             |      ✓      |
-| Reopened    |          ✗            |               ✓                 |             ✓             |      ✓      |
-| Archived    |          ✗            |               ✗                 |             ✗             |      ✗      |
-| Deleted     |          ✗            |               ✗                 |             ✗             |      ✗      |
+| Estado      | Captura de artefactos | Anotaciones (comentarios/notas) | Aparece en listado activo | Modificable | Transiciones de salida            |
+|-------------|:---------------------:|:-------------------------------:|:-------------------------:|:-----------:|-----------------------------------|
+| Draft       |          ✗            |               ✗                 |             ✓             |      ✓      | `→ Recording` (única)             |
+| Recording   |          ✓            |               ✓                 |             ✓             |      ✓      | `→ Completed`                     |
+| Completed   |          ✗            |               ✓                 |             ✓             |      ✓      | `→ Reopened`, `→ Archived`        |
+| Reopened    |          ✗            |               ✓                 |             ✓             |      ✓      | `→ Recording`                     |
+| Archived    |          ✗            |               ✗                 |             ✗             |      ✗      | ninguna                           |
+| Deleted     |          ✗            |               ✗                 |             ✗             |      ✗      | ninguna (absorbente)              |
 
 ### Modelo 3: Taxonomía de Artefactos
 
@@ -889,12 +975,44 @@ Es decir: si múltiples controles concurrentes se pronuncian sobre una operació
 
 Mapping determinístico de eventos de dominio → notificaciones generadas (Requirement 12):
 
-| Evento de dominio                    | Destinatarios                                                                                                    | Consolidación                                                              |
-|--------------------------------------|------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------|
-| Cliente agrega comentario            | Administrador de Proyecto propietario                                                                            | —                                                                          |
-| Cliente responde comentario          | Autor del comentario original **y** Administrador de Proyecto propietario                                        | Si autor original = Administrador propietario → **1 sola** notificación    |
-| ReviewSession → `Completed`          | Todos los participantes autorizados del Proyecto (Administrador propietario + Clientes con invitación aceptada)  | —                                                                          |
-| Procesamiento IA finaliza sobre sesión | Administrador de Proyecto propietario                                                                          | —                                                                          |
+| Evento de dominio                                     | Destinatarios                                                                                                    | Consolidación                                                              |
+|-------------------------------------------------------|------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------|
+| Cliente agrega comentario                             | Administrador de Proyecto propietario                                                                            | —                                                                          |
+| Cliente responde comentario                           | Autor del comentario original **y** Administrador de Proyecto propietario                                        | Si autor original = Administrador propietario → **1 sola** notificación    |
+| **Administrador de Proyecto responde un comentario**  | **El Cliente**, con independencia de quién sea el autor del comentario padre (propio o del Cliente)               | Si además coincide con el autor del comentario padre → **1 sola** notificación al Cliente |
+| ReviewSession → `Completed`                           | Todos los participantes autorizados del Proyecto (Administrador propietario + Clientes con invitación aceptada)  | —                                                                          |
+| Procesamiento IA finaliza sobre sesión                | Administrador de Proyecto propietario                                                                            | —                                                                          |
+
+**Regla de respuesta del Administrador de Proyecto (nueva)**: cuando un Administrador de Proyecto responde un comentario de una Review Session, el Cliente del Proyecto **siempre** es notificado. Esto se cumple en los dos casos:
+
+- El comentario padre es del Cliente → el Cliente recibe notificación como autor del comentario original.
+- El comentario padre es **del propio Administrador de Proyecto** → el Cliente recibe igualmente notificación. Este caso **no** se suprime como auto-notificación: la supresión de auto-notificación aplica al *emisor* (el Administrador no se notifica a sí mismo), nunca al Cliente.
+
+**Coherencia con la regla de consolidación**: la consolidación del Requirement 12.2 opera únicamente sobre destinatarios *duplicados* — cuando el autor del comentario original y el Administrador de Proyecto propietario son el mismo usuario, se emite una sola notificación consolidada en lugar de dos. La consolidación **nunca reduce a cero** el conjunto de destinatarios ni elimina al Cliente de él:
+
+```pascal
+FUNCTION recipientsOfReply(reply: Artifact, parent: Artifact): Set<UserId>
+BEGIN
+  owner   ← wspr.getProject(session(reply).projectId).ownerAdminId
+  clients ← wspr.clientsWithAcceptedInvitation(session(reply).projectId)
+
+  recipients ← ∅
+  recipients ← recipients ∪ { parent.authorUserId }        // autor del comentario padre
+  recipients ← recipients ∪ { owner }                       // Administrador propietario
+
+  IF reply.authorUserId = owner THEN
+    recipients ← recipients ∪ clients                       // NUEVA REGLA: el Cliente siempre se notifica
+  END IF
+
+  recipients ← recipients \ { reply.authorUserId }           // nadie se auto-notifica...
+  // ...salvo que la nueva regla lo haya incorporado como Cliente:
+  // el emisor es el Administrador, luego los Clientes nunca quedan excluidos por esta línea.
+
+  RETURN recipients        // conjunto ⇒ deduplicación = consolidación (Req 12.2)
+END FUNCTION
+```
+
+Al modelarse como **conjunto**, la consolidación es una consecuencia estructural: un mismo usuario aparece una única vez, y por tanto recibe exactamente una notificación.
 
 **Reintento**: si el registro en el historial consultable falla tras generación exitosa, se reintenta hasta 2 veces (3 intentos totales) — Requirement 12.6.
 
@@ -912,24 +1030,308 @@ MODULE shared-kernel
   TYPE NotificationId  = OpaqueId
   TYPE SessionId       = OpaqueId
   TYPE CorrelationId   = OpaqueId
+  TYPE UploadId        = OpaqueId          // identificador de la upload session (informativo)
 
   TYPE Instant         = ISO-8601 UTC
   TYPE EmailAddress    = validated per RFC 5322
   TYPE PayloadRef      = InlineJson | BlobUrl
 
+  TYPE ChunkSequence   = Integer >= 0      // espacio de secuencias propio por (reviewSessionId, artifactId)
+  TYPE Checksum        = HexString         // algoritmo concreto en ADR (p.ej. SHA-256)
+  TYPE Bytes           = octet stream
+
+  ENUM UploadSessionState = { OPEN, FINALIZING, FINALIZED, ABORTED }
+
   TYPE AccessError     = { UNAUTHENTICATED, FORBIDDEN, NOT_FOUND }
+
+  TYPE ChunkError      = { CHUNK_CONTENT_MISMATCH, UPLOAD_FINALIZING, UPLOAD_SESSION_FINALIZED }
+  TYPE FinalizeError   = { MISSING_CHUNKS, FINAL_CHECKSUM_MISMATCH }
 
 END MODULE
 ```
 
+> **Nota sobre `UploadId`**: sigue existiendo como identificador legible de la upload session (útil para logs y diagnóstico), pero **no** forma parte de la clave de idempotencia de un chunk. La clave es `(reviewSessionId, artifactId, sequence)` — ver Modelo 8.5.
+
 **Regla**: los identificadores son opacos. Ningún módulo asume estructura interna (ni longitud, ni codificación) más allá de la igualdad. La decisión concreta (`UUID v4`, `UUID v7`, o snowflake) queda en ADR del módulo `shared-kernel` y no afecta a los consumidores.
 
+### Modelo 8: Ingesta por Chunks de Artefactos de Gran Volumen
+
+Los artefactos de gran volumen (grabación rrweb, escena Excalidraw, notas de voz largas) no se suben en una única petición: el frontend los trocea en **chunks** numerados y los envía de forma incremental durante la fase `RECORDING`. El protocolo está diseñado para ser **idempotente frente a reintentos** (red inestable, reintentos del navegador, reenvíos de la extensión) y para no perder ni corromper contenido.
+
+> **Nota de trazabilidad a requisitos**: la ingesta por chunks es un **mecanismo de diseño** que sirve a los Requirements 10.1 (persistencia duradera de todos los artefactos capturados), 10.2 (aislamiento del fallo de persistencia por sesión), 10.5 (asociación artefacto ↔ sesión sólo si la persistencia culmina) y 8.8 (captura habilitada sólo en `RECORDING`). **No existe hoy un requisito dedicado al protocolo de subida por chunks** en `requirements.md`; esta ausencia se registra como pregunta abierta para la fase de requisitos (ver «Preguntas abiertas» al final de esta sección).
+
+#### Modelo 8.1: Resolución de idempotencia del `PUT` de chunk
+
+`PUT /review-sessions/{sessionId}/artifacts/{artifactId}/chunks/{sequence}` con header `X-Chunk-Checksum` obligatorio. La resolución depende del estado de la upload session y de si la `sequence` ya existe con el mismo o distinto checksum:
+
+| Estado del upload | Situación                                | Respuesta                       | Acción del backend                                                                                  |
+|-------------------|------------------------------------------|---------------------------------|------------------------------------------------------------------------------------------------------|
+| `OPEN`            | secuencia nueva                          | `201 Created`                   | Almacena el chunk y registra su checksum                                                              |
+| `OPEN`            | misma secuencia + mismo checksum         | `200 OK` (`duplicate=true`)     | Nada. Reintento idempotente                                                                            |
+| `OPEN`            | misma secuencia + checksum distinto      | `409 CHUNK_CONTENT_MISMATCH`    | Conserva el primer contenido. El cliente debe abortar el upload y crear una **nueva** upload session   |
+| `FINALIZING`      | llega cualquier chunk                    | `409 UPLOAD_FINALIZING`         | Rechaza: no se aceptan chunks nuevos mientras se valida integridad/consistencia                        |
+| `FINALIZED`       | misma secuencia + mismo checksum         | `200 OK` (`duplicate=true`)     | Nada. Reintento tardío inocuo                                                                          |
+| `FINALIZED`       | secuencia nueva                          | `409 UPLOAD_SESSION_FINALIZED`  | Rechaza. Una sesión finalizada es inmutable                                                            |
+| `FINALIZED`       | misma secuencia + checksum distinto      | `409 UPLOAD_SESSION_FINALIZED`  | Rechaza. El contenido de una sesión finalizada no se puede modificar                                   |
+
+**El checksum es el discriminador del protocolo**: la resolución de idempotencia no depende del tamaño, ni del orden de llegada, ni de la marca temporal. En consecuencia:
+
+- `X-Chunk-Checksum` es un header **obligatorio**. Si falta o está malformado, la respuesta es `400` (`code: CHUNK_CHECKSUM_REQUIRED`), y el chunk **no** se almacena.
+- Queda **derogada** la degradación previa de este documento por la que un `PUT` sobre `OPEN` sin checksum previo y con el mismo tamaño respondía `200`. El tamaño ya no es criterio de equivalencia de contenido: dos chunks distintos del mismo tamaño son un `CHUNK_CONTENT_MISMATCH`, no un duplicado.
+- ⚠ **Decisión a confirmar**: hacer el checksum obligatorio (en lugar de definir un *fallback* cuando el cliente no lo envía) es la opción elegida aquí por ser la única que hace el protocolo determinista. Si se prefiere admitir clientes sin checksum, hay que definir explícitamente qué respuesta se da en ese caso.
+
+Una `sequence` cuyo contenido ya fue aceptado es **inmutable durante toda la vida de la upload session**, con independencia del estado (`OPEN`, `FINALIZING` o `FINALIZED`). No existe operación de sobre-escritura de chunk; la vía de recuperación ante contenido divergente es `abort` + nueva upload session.
+
+#### Modelo 8.2: Manifiesto de chunks (modelo lógico)
+
+| Campo             | Tipo                 | Notas                                                                     |
+|-------------------|----------------------|---------------------------------------------------------------------------|
+| `reviewSessionId` | `ReviewSessionId`    | **PK (1/3)** — parte de la clave de idempotencia                          |
+| `artifactId`      | `ArtifactId`         | **PK (2/3)** — cada artefacto tiene su propio espacio de secuencias       |
+| `sequence`        | `ChunkSequence`      | **PK (3/3)** — entero ≥ 0, denso (sin huecos) al finalizar                |
+| `checksum`        | `Checksum`           | Checksum del contenido del chunk. Discriminador de idempotencia            |
+| `sizeBytes`       | `Integer`            | Informativo/observabilidad. **No** participa en la decisión de idempotencia |
+| `storageKey`      | `String`             | Clave derivada en object storage (Modelo 8.3)                              |
+| `receivedAt`      | `Instant`            | Marca de recepción del **primer** almacenamiento del chunk                 |
+
+```
+PRIMARY KEY (reviewSessionId, artifactId, sequence)
+```
+
+Tabla hermana de la upload session (una fila por `(reviewSessionId, artifactId)`):
+
+| Campo             | Tipo                  | Notas                                                                 |
+|-------------------|-----------------------|-----------------------------------------------------------------------|
+| `reviewSessionId` | `ReviewSessionId`     | **PK (1/2)**                                                          |
+| `artifactId`      | `ArtifactId`          | **PK (2/2)**                                                          |
+| `uploadId`        | `UploadId`            | Identificador legible para logs/diagnóstico. No es clave funcional     |
+| `state`           | `UploadSessionState`  | `OPEN` \| `FINALIZING` \| `FINALIZED` \| `ABORTED`                     |
+| `kind`            | `ArtifactKind`        | Tipo de artefacto destino                                              |
+| `expectedChunks`  | `Optional<Integer>`   | Se fija al invocar `finalize` (`totalChunks`)                          |
+| `finalChecksum`   | `Optional<Checksum>`  | Se fija al invocar `finalize`                                          |
+| `finalizedAt`     | `Optional<Instant>`   | Sólo en `FINALIZED`                                                    |
+
+#### Modelo 8.3: Derivación de claves en object storage
+
+La clave de almacenamiento se deriva **de la misma terna** que la clave de idempotencia, de modo que el espacio de nombres físico refleja el espacio de secuencias lógico:
+
+```
+chunks/{reviewSessionId}/{artifactId}/{sequence:0000000}
+```
+
+Y el objeto ensamblado tras `finalize`:
+
+```
+artifacts/{reviewSessionId}/{artifactId}/payload
+```
+
+Consecuencias:
+- Escribir dos veces el mismo chunk apunta a la **misma** clave física, luego el reintento idempotente no genera basura.
+- Dos artefactos de la misma Review Session **nunca** colisionan aunque usen la misma numeración de secuencias: el `artifactId` está en el prefijo.
+- Abortar una upload session permite borrar todo su contenido con un único `delete by prefix`.
+
+#### Modelo 8.4: Códigos de error canónicos
+
+| `code`                     | HTTP  | Significado                                                                                   |
+|----------------------------|:-----:|-----------------------------------------------------------------------------------------------|
+| `CHUNK_CONTENT_MISMATCH`   | 409   | Ya existe un chunk con esa secuencia pero su contenido (checksum) difiere                      |
+| `MISSING_CHUNKS`           | 409   | No se puede finalizar porque falta uno o más chunks                                            |
+| `UPLOAD_FINALIZING`        | 409   | La sesión se está validando y no acepta nuevos chunks                                          |
+| `UPLOAD_SESSION_FINALIZED` | 409   | La sesión ya está finalizada y es completamente inmutable                                       |
+| `FINAL_CHECKSUM_MISMATCH`  | 422 ⚠ | El checksum global recibido en `finalize` no coincide con el contenido ensamblado               |
+| `CHUNK_CHECKSUM_REQUIRED`  | 400   | El `PUT` de chunk no incluye `X-Chunk-Checksum` (obligatorio)                                    |
+
+`MISSING_CHUNKS` es el nombre canónico y **sustituye por completo** al código `INCOMPLETE_CHUNK_SEQUENCE` empleado en versiones previas de este documento; ese identificador queda retirado del contrato.
+
+Ejemplo de respuesta `Problem+JSON` para `MISSING_CHUNKS`:
+
+```json
+{
+  "type": "https://reviews.example/problems/missing-chunks",
+  "title": "No se puede finalizar la subida: faltan chunks",
+  "status": 409,
+  "code": "MISSING_CHUNKS",
+  "reviewSessionId": "01J9Z…",
+  "artifactId": "01J9Z…",
+  "expectedChunks": 312,
+  "receivedChunks": 309,
+  "missingSequences": [17, 204, 311],
+  "correlationId": "01J9Z…"
+}
+```
+
+⚠ **`FINAL_CHECKSUM_MISMATCH` — decisión pendiente de confirmación.** Este caso (todos los chunks presentes pero el checksum global no coincide) **no está cubierto** por las tablas de protocolo aportadas. La propuesta de este diseño es:
+
+- `code`: `FINAL_CHECKSUM_MISMATCH`.
+- HTTP: `422` (el comando está bien formado y la secuencia está completa; lo que falla es una regla de integridad del contenido, no el estado del recurso). La alternativa es `409`, por coherencia visual con el resto de errores del protocolo.
+- Estado resultante: la upload session **vuelve a `OPEN`** y **no** se finaliza, pero como los chunks ya recibidos son inmutables, la única vía real de recuperación es `abort` + nueva upload session. La alternativa es forzar directamente `ABORTED` para no dejar al cliente en un estado del que no puede salir.
+
+Ambas decisiones (código HTTP y estado resultante) requieren confirmación antes de implementarse.
+
+#### Modelo 8.5: Clave de idempotencia por artefacto
+
+La clave única/de idempotencia de un chunk es:
+
+```
+(reviewSessionId, artifactId, sequence)
+```
+
+**No** es `(uploadId, sequence)`, y **no** es `sequence` por sí sola. Justificación: una misma Review Session alberga varios artefactos de gran volumen a la vez —grabación rrweb, escena Excalidraw y otros por venir—. Si la clave fuera la secuencia sola (o estuviera ligada a un `uploadId` efímero), dos artefactos de la misma sesión colisionarían en el chunk `#7`, o bien un reintento tras reabrir una upload session perdería la propiedad de idempotencia. Con `artifactId` en la clave, **cada artefacto obtiene un espacio de secuencias independiente** y el protocolo sigue funcionando sin cambios al añadir nuevos tipos de artefacto.
+
+Detección de huecos (la secuencia debe ser densa de `0` a `totalChunks - 1`):
+
+```sql
+-- Secuencias esperadas que no llegaron, para un artefacto concreto
+SELECT s.seq AS missing_sequence
+FROM generate_series(0, :expectedChunks - 1) AS s(seq)
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM artifact_chunk c
+    WHERE c.review_session_id = :reviewSessionId
+      AND c.artifact_id       = :artifactId
+      AND c.sequence          = s.seq
+)
+ORDER BY s.seq;
+```
+
+Pseudocódigo de resolución del `PUT` de chunk:
+
+```pascal
+FUNCTION putChunk(sessionId, artifactId, sequence, checksum, payload): Result<ChunkAck, ChunkError>
+BEGIN
+  IF checksum = NONE THEN
+    RETURN Error(CHUNK_CHECKSUM_REQUIRED)                      // 400
+  END IF
+
+  upload ← findUploadSession(sessionId, artifactId)
+  existing ← findChunk(sessionId, artifactId, sequence)          // PK (reviewSessionId, artifactId, sequence)
+
+  MATCH upload.state WITH
+  | OPEN →
+      IF existing = NONE THEN
+        store(storageKeyOf(sessionId, artifactId, sequence), payload)
+        insertChunk(sessionId, artifactId, sequence, checksum, sizeOf(payload))
+        RETURN Ok({ sequence, duplicate: FALSE })                // 201
+      ELSE IF existing.checksum = checksum THEN
+        RETURN Ok({ sequence, duplicate: TRUE })                 // 200, no se escribe nada
+      ELSE
+        RETURN Error(CHUNK_CONTENT_MISMATCH)                     // 409, se conserva el primer contenido
+      END IF
+
+  | FINALIZING →
+      RETURN Error(UPLOAD_FINALIZING)                            // 409, sin excepciones
+
+  | FINALIZED →
+      IF existing ≠ NONE AND existing.checksum = checksum THEN
+        RETURN Ok({ sequence, duplicate: TRUE })                 // 200, reintento tardío inocuo
+      ELSE
+        RETURN Error(UPLOAD_SESSION_FINALIZED)                   // 409, inmutable
+      END IF
+
+  | ABORTED →
+      RETURN Error(UPLOAD_SESSION_FINALIZED)                     // ⚠ ver pregunta abierta sobre ABORTED
+END FUNCTION
+```
+
+#### Modelo 8.6: Ciclo de vida de la upload session y protocolo de `finalize`
+
+```mermaid
+stateDiagram-v2
+    [*] --> OPEN: openUploadSession
+    OPEN --> FINALIZING: finalize invocado
+    FINALIZING --> FINALIZED: validación de integridad<br/>y consistencia superada
+    FINALIZING --> OPEN: validación detecta<br/>chunks faltantes (409 MISSING_CHUNKS)
+    OPEN --> ABORTED: abortUpload
+    FINALIZED --> [*]
+    ABORTED --> [*]
+
+    note right of FINALIZING
+      No se aceptan chunks nuevos
+      (409 UPLOAD_FINALIZING)
+    end note
+    note right of FINALIZED
+      Inmutable. Sólo reintentos
+      idénticos responden 200.
+      finalize repetido:
+      200 alreadyFinalized=true
+    end note
+```
+
+**`finalize` transporta un resumen esperado.** `finalize` no es un simple «he terminado»: el frontend declara qué debería haber recibido el backend.
+
+```
+POST /review-sessions/{sessionId}/artifacts/{artifactId}/upload/finalize
+```
+
+```json
+{ "totalChunks": 312, "finalChecksum": "..." }
+```
+
+El backend valida **tres** cosas, en este orden, y cada una tiene su propia respuesta de fallo:
+
+1. **¿Llegaron 312 chunks?** — se compara el conteo de filas del manifiesto contra `totalChunks`.
+2. **¿Falta alguno?** — se comprueba densidad de la secuencia `0 … totalChunks - 1` con la consulta de detección de huecos del Modelo 8.5. Un conteo correcto no implica secuencia densa (p.ej. 312 filas con el `#0` duplicado lógicamente imposible por PK, pero sí con secuencias fuera de rango), por lo que esta comprobación es independiente de la anterior.
+3. **¿Coincide el checksum global?** — se recalcula el checksum del contenido ensamblado en orden de secuencia y se compara contra `finalChecksum`.
+
+**Tabla del protocolo de `finalize`**:
+
+| Situación                                              | Respuesta                            | Acción del backend                                                                              |
+|--------------------------------------------------------|--------------------------------------|-------------------------------------------------------------------------------------------------|
+| Todos los chunks presentes y válidos                   | `200 OK`                             | Transiciona a `FINALIZED` y registra la metadata final (nº de chunks, tamaño, checksum global, etc.) |
+| Faltan chunks                                          | `409 MISSING_CHUNKS`                 | **No** finaliza; devuelve la lista de secuencias faltantes                                       |
+| `finalize` invocado de nuevo sobre una sesión ya finalizada | `200 OK` (`alreadyFinalized=true`) | Sin acción. Respuesta idempotente                                                                |
+| Checksum global no coincide ⚠                          | `422 FINAL_CHECKSUM_MISMATCH` ⚠      | **No** finaliza; propuesta: la sesión vuelve a `OPEN`. Ver decisión pendiente en Modelo 8.4      |
+
+Pseudocódigo:
+
+```pascal
+FUNCTION finalizeUpload(sessionId, artifactId, expected): Result<UploadSession, FinalizeError>
+BEGIN
+  upload ← findUploadSession(sessionId, artifactId)
+
+  IF upload.state = FINALIZED THEN
+    RETURN Ok(upload WITH { alreadyFinalized: TRUE })            // 200, idempotente
+  END IF
+
+  transition(upload, OPEN → FINALIZING)                          // desde aquí, todo chunk → 409 UPLOAD_FINALIZING
+
+  received ← countChunks(sessionId, artifactId)
+  missing  ← findMissingSequences(sessionId, artifactId, expected.totalChunks)   // SQL Modelo 8.5
+
+  IF received ≠ expected.totalChunks OR missing ≠ ∅ THEN
+    transition(upload, FINALIZING → OPEN)
+    RETURN Error(MISSING_CHUNKS WITH { expected: expected.totalChunks, received, missing })   // 409
+  END IF
+
+  actualChecksum ← computeGlobalChecksum(sessionId, artifactId)   // ensamblado en orden de secuencia
+  IF actualChecksum ≠ expected.finalChecksum THEN
+    transition(upload, FINALIZING → OPEN)                         // ⚠ decisión pendiente: OPEN vs ABORTED
+    RETURN Error(FINAL_CHECKSUM_MISMATCH)                          // ⚠ decisión pendiente: 422 vs 409
+  END IF
+
+  assemble(sessionId, artifactId)                                  // artifacts/{sessionId}/{artifactId}/payload
+  recordFinalMetadata(upload, expected.totalChunks, totalSize, expected.finalChecksum)
+  transition(upload, FINALIZING → FINALIZED)
+  RETURN Ok(upload)                                                // 200
+END FUNCTION
+```
+
+**Relación con el ciclo de vida de la Review Session**: la apertura de una upload session y el `PUT` de chunks exigen `session.state = RECORDING` (Requirement 8.8). Si la persistencia del artefacto no culmina —`MISSING_CHUNKS` o `FINAL_CHECKSUM_MISMATCH` pendientes—, la transición `RECORDING → COMPLETED` se bloquea sobre esa sesión concreta con `persistenceStatus = FAILED`, sin afectar a otras sesiones (Requirements 10.2, 10.5).
+
+#### Preguntas abiertas del Modelo 8
+
+1. **`FINAL_CHECKSUM_MISMATCH`**: código, HTTP (`409` vs `422`) y estado resultante (`OPEN` vs `ABORTED`). Pendiente de confirmación.
+2. **Checksum obligatorio**: se ha decidido `X-Chunk-Checksum` como header obligatorio (`400 CHUNK_CHECKSUM_REQUIRED` si falta), en lugar de definir un *fallback* por tamaño. Pendiente de confirmación.
+3. **Estado `ABORTED`**: las tablas aportadas no especifican la respuesta a un `PUT` de chunk ni a un `finalize` sobre una sesión `ABORTED`. El diseño responde `409 UPLOAD_SESSION_FINALIZED` de forma provisional; convendría un código propio (p.ej. `UPLOAD_SESSION_ABORTED`).
+4. **Requisito de respaldo**: no existe un requisito en `requirements.md` que cubra el protocolo de subida por chunks. Debería añadirse un requisito específico para que las Properties 21–23 tengan trazabilidad directa.
 
 ## Correctness Properties
 
 *Una propiedad es una característica o comportamiento que debe cumplirse en todas las ejecuciones válidas del sistema — esencialmente, un enunciado formal de qué se supone que hace el software. Las propiedades sirven de puente entre las especificaciones legibles por humanos y las garantías de corrección verificables por máquina.*
 
 Las siguientes propiedades son las **invariantes de fundación** de la plataforma Reviews. Se derivan del prework sobre los criterios de aceptación de los 21 requisitos, tras un paso de consolidación que eliminó redundancias (por ejemplo, todas las reglas de acceso de los Requisitos 3, 4, 5, 7 y 11 colapsan en una única propiedad unificada de autorización; todas las reglas del ciclo de vida del Requisito 8 se agrupan en cuatro propiedades ortogonales sobre la máquina de estados). Cada spec por módulo tomará este conjunto como marco y añadirá sus propias propiedades más finas.
+
+Las Properties 21, 22 y 23 cubren el protocolo de ingesta por chunks del `Modelo 8`. Su trazabilidad es **indirecta** (Requirements 10.1–10.5, 8.8) porque `requirements.md` no contiene todavía un requisito dedicado a ese protocolo; ver «Preguntas abiertas del Modelo 8».
 
 Las propiedades están escritas de forma neutral respecto de la implementación: hablan del dominio de Reviews y no de un framework de testing concreto. Cada spec por módulo elige la biblioteca de PBT del ecosistema correspondiente (por ejemplo, jqwik en Java, fast-check en TypeScript) y las traduce a tests con al menos 100 iteraciones cada uno.
 
@@ -959,13 +1361,27 @@ Las propiedades están escritas de forma neutral respecto de la implementación:
 
 ### Property 5: Validez de las transiciones de estado
 
-*Para toda* `ReviewSession` en estado `S`, todo comando de transición `C` y todo actor `A`, la operación se aplica y modifica el estado a `S'` si y sólo si la terna `(S, C, A.role, ownership(A, session.project))` pertenece al conjunto de transiciones válidas definido en la matriz del `Data Models`; en cualquier otro caso el estado permanece igual a `S` y el comando retorna un error de transición inválida. En particular, ninguna terna con `S = DELETED` pertenece al conjunto de transiciones válidas: el estado `DELETED` es absorbente.
+*Para toda* `ReviewSession` en estado `S`, todo comando de transición `C` y todo actor `A`, la operación se aplica y modifica el estado a `S'` si y sólo si la terna `(S, C, A.role, ownership(A, session.project))` pertenece al conjunto de transiciones válidas definido en la matriz del `Modelo 2`; en cualquier otro caso el estado permanece igual a `S` y el comando retorna un error de transición inválida. Ese conjunto es exactamente:
 
-**Validates: Requirements 4.5, 4.6, 7.4, 7.5, 7.6, 8.3, 8.4, 8.5, 8.6, 8.7, 8.11**
+```
+  DRAFT      --startRecording-->    RECORDING     (única salida de DRAFT)
+  RECORDING  --completeRecording--> COMPLETED     (requiere persistencia OK)
+  COMPLETED  --reopen-->            REOPENED      (sólo Project Admin propietario)
+  REOPENED   --startRecording-->    RECORDING
+  COMPLETED  --archive-->           ARCHIVED      (única entrada a ARCHIVED; sólo Project Admin propietario)
+```
+
+En particular, y de forma verificable como parte de la misma propiedad:
+- Ninguna terna con `S = DELETED` ni con `S = ARCHIVED` pertenece al conjunto: ambos son estados sin transiciones de salida, y `DELETED` es absorbente.
+- `archive` sobre `DRAFT`, `RECORDING` o `REOPENED` es rechazado: `ARCHIVED` tiene exactamente una arista de entrada.
+- `completeRecording` sobre `REOPENED` es rechazado: el re-cierre exige pasar por `RECORDING`.
+- No se evalúa ninguna transición hacia `DELETED`: sus aristas de entrada están pendientes de confirmación (ver «Transiciones hacia DELETED — OPEN QUESTION» en el Modelo 2), y hasta entonces el conjunto válido no contiene ninguna.
+
+**Validates: Requirements 4.5, 4.6, 7.4, 7.5, 7.6, 8.3, 8.4, 8.5, 8.6, 8.11**
 
 ### Property 6: Operaciones habilitadas por estado
 
-*Para toda* `ReviewSession` en estado `S` y toda categoría de operación `Op` (captura de artefacto, creación de anotación, aparición en listados activos, modificación general), la operación se acepta si y sólo si el par `(S, Op)` está marcado como habilitado en la tabla de operaciones-por-estado del `Data Models`; en cualquier otro caso la operación es rechazada.
+*Para toda* `ReviewSession` en estado `S` y toda categoría de operación `Op` (captura de artefacto, creación de anotación, aparición en listados activos, modificación general, transiciones de salida disponibles), la operación se acepta si y sólo si el par `(S, Op)` está marcado como habilitado en la tabla de operaciones-por-estado del `Modelo 2`; en cualquier otro caso la operación es rechazada. En particular, tras una reapertura la captura de artefactos vuelve a estar habilitada únicamente cuando la sesión ha transicionado `REOPENED → RECORDING`, nunca mientras permanece en `REOPENED`.
 
 **Validates: Requirements 8.8, 8.9, 8.10, 8.11**
 
@@ -1054,9 +1470,11 @@ Ninguna otra combinación de rol y relación otorga acceso, y ningún acceso se 
 
 ### Property 19: Determinismo del mapeo evento → destinatarios de notificación
 
-*Para todo* evento de dominio notificable `E` (comentario agregado, comentario respondido, sesión completada, procesamiento IA finalizado), el conjunto de notificaciones generadas es exactamente el conjunto determinístico definido por el `Modelo 6` de `Data Models`, con la regla especial de consolidación:
+*Para todo* evento de dominio notificable `E` (comentario agregado, comentario respondido, sesión completada, procesamiento IA finalizado), el conjunto de notificaciones generadas es exactamente el conjunto determinístico definido por el `Modelo 6` de `Data Models`, cumpliéndose simultáneamente las tres reglas siguientes:
 
-*Para toda* respuesta a comentario donde el autor del comentario original coincide con el Administrador de Proyecto propietario del Proyecto, se genera **exactamente una** notificación consolidada dirigida a ese usuario (no dos).
+1. **Consolidación**: *para toda* respuesta a comentario donde el autor del comentario original coincide con el Administrador de Proyecto propietario del Proyecto, se genera **exactamente una** notificación consolidada dirigida a ese usuario (no dos).
+2. **Respuesta del Administrador de Proyecto**: *para toda* respuesta a comentario cuyo autor es el Administrador de Proyecto propietario, el Cliente del Proyecto pertenece al conjunto de destinatarios, **con independencia de si el comentario padre es del propio Administrador o del Cliente**. En el caso de respuesta a un comentario propio, la notificación al Cliente **no** se suprime por la lógica de auto-notificación: la supresión aplica únicamente al emisor de la respuesta.
+3. **Sin duplicados**: ningún usuario recibe más de una notificación por el mismo evento, y ningún usuario recibe notificación de un evento que él mismo originó.
 
 **Validates: Requirements 12.1, 12.2, 12.3, 12.4**
 
@@ -1070,6 +1488,39 @@ Nunca se mezclan idiomas dentro del mismo render.
 
 **Validates: Requirements 14.3**
 
+### Property 21: Idempotencia del `PUT` de chunk por `(reviewSessionId, artifactId, sequence)`
+
+*Para toda* upload session en estado `U ∈ {OPEN, FINALIZING, FINALIZED}`, toda terna `(reviewSessionId, artifactId, sequence)` y todo par de contenidos con checksums `c₁`, `c₂`, el resultado de un `PUT` de chunk es exactamente el determinado por la tabla del `Modelo 8.1` en función de `(U, existencia previa de la secuencia, c₁ = c₂)`, y además:
+
+1. El contenido del **primer** chunk aceptado para una terna dada nunca es sobrescrito, con independencia del número de reintentos, del estado de la upload session y del orden de llegada.
+2. Un reintento con checksum idéntico no produce ninguna escritura adicional y responde `duplicate = true`.
+3. *Para todo* par de artefactos distintos `a₁ ≠ a₂` de la **misma** Review Session, y toda secuencia `s`, los chunks `(rs, a₁, s)` y `(rs, a₂, s)` son independientes: no colisionan, no se sobrescriben y cada artefacto ensambla exclusivamente su propio contenido. Los espacios de secuencias son independientes por artefacto.
+4. Un `PUT` sin checksum es rechazado antes de cualquier escritura.
+
+**Validates: Requirements 10.1, 10.5, 8.8**
+
+### Property 22: Round-trip y detección exacta de huecos en `finalize`
+
+*Para todo* contenido binario `P`, todo tamaño de chunk `k > 0` que produce `n = ⌈|P| / k⌉` chunks, y toda permutación del orden de envío de esos chunks:
+
+1. Si se envían **los `n` chunks** y se invoca `finalize` con `{ totalChunks: n, finalChecksum: checksum(P) }`, la respuesta es `200 OK`, la upload session queda en `FINALIZED` y el payload ensamblado recuperado es **byte a byte igual a `P`** (round trip), con independencia del orden de envío y del número de reintentos idempotentes intercalados.
+2. Si se omite cualquier subconjunto propio no vacío `M` de secuencias, `finalize` responde `409 MISSING_CHUNKS`, **no** finaliza la sesión, y la lista de secuencias faltantes devuelta es **exactamente `M`** (ni más, ni menos, ni desordenada respecto del criterio declarado).
+3. Invocar `finalize` de nuevo sobre una sesión ya `FINALIZED` responde `200 OK` con `alreadyFinalized = true` y no produce ningún cambio de estado ni de contenido (idempotencia).
+4. Si el conteo y la densidad de la secuencia son correctos pero el checksum global no coincide, la sesión **no** transiciona a `FINALIZED`.
+
+**Validates: Requirements 10.1, 10.3, 10.4**
+
+### Property 23: Inmutabilidad y monotonía del ciclo de vida de la upload session
+
+*Para toda* upload session y toda secuencia de operaciones del protocolo (`openUploadSession`, `putChunk`, `finalize`, `abortUpload`) aplicada en cualquier orden:
+
+1. El estado de la upload session recorre únicamente transiciones del conjunto `{OPEN → FINALIZING, FINALIZING → FINALIZED, FINALIZING → OPEN, OPEN → ABORTED}`; cualquier otra transición es rechazada sin modificar el estado.
+2. Mientras el estado es `FINALIZING`, **todo** `PUT` de chunk es rechazado con `UPLOAD_FINALIZING`, sin excepciones y sin escritura.
+3. Una vez alcanzado `FINALIZED`, el conjunto de chunks y el payload ensamblado son inmutables: ninguna operación posterior los modifica, y todo `PUT` que no sea un reintento con checksum idéntico es rechazado con `UPLOAD_SESSION_FINALIZED`.
+4. `FINALIZED` y `ABORTED` son estados terminales: ninguna transición sale de ellos.
+
+**Validates: Requirements 10.2, 10.5**
+
 ## Error Handling
 
 ### Categorías de Error
@@ -1082,8 +1533,8 @@ La plataforma distingue seis categorías de error, cada una con un tratamiento c
 | No autenticado         | 401   | Falta credencial o es inválida                                                                | `type`, `title`, `correlationId`        | Seguridad (WARN)        |
 | No autorizado          | 403   | Autenticado pero sin autorización sobre el recurso                                            | `type`, `title`, `correlationId`        | Seguridad (WARN)        |
 | No encontrado          | 404   | Recurso inexistente **o** existente pero no accesible (evita revelar existencia)              | `type`, `title`, `correlationId`        | Operativo (INFO)        |
-| Transición inválida    | 409   | Comando incompatible con el estado del recurso (p.ej. `startRecording` sobre sesión `ARCHIVED`)| `type`, `title`, `currentState`         | Operativo (INFO)        |
-| Regla de dominio       | 422   | Comando bien formado pero viola una regla de dominio (p.ej. modificar comentario ajeno)       | `type`, `title`, `reason`, `correlationId` | Operativo (WARN)     |
+| Transición inválida    | 409   | Comando incompatible con el estado del recurso (p.ej. `archive` sobre sesión `DRAFT`, `complete` sobre `REOPENED`) o conflicto del protocolo de subida | `type`, `title`, `code`, `currentState` | Operativo (INFO)        |
+| Regla de dominio       | 422   | Comando bien formado pero viola una regla de dominio (p.ej. modificar comentario ajeno, `FINAL_CHECKSUM_MISMATCH`) | `type`, `title`, `reason`, `correlationId` | Operativo (WARN)     |
 | Error no controlado    | 500   | Excepción no capturada, fallo de dependencia interna                                          | `type: about:blank`, `correlationId`     | Operativo (ERROR) + auditoría |
 
 **Regla común**: el `correlationId` de la petición siempre está presente en la respuesta (header `X-Correlation-Id` y body cuando aplique) y en los logs, garantizando trazabilidad (Requirement 17.5).
@@ -1131,6 +1582,23 @@ END FUNCTION
 
 3 intentos totales = 1 original + 2 reintentos, según Requirement 12.6.
 
+### Errores del Protocolo de Subida por Chunks (Modelo 8)
+
+Los conflictos del protocolo de subida se sirven como `409` (salvo `FINAL_CHECKSUM_MISMATCH`, propuesto como `422`, y `CHUNK_CHECKSUM_REQUIRED`, que es `400`), siempre con el campo `code` poblado con uno de los identificadores canónicos:
+
+| `code`                     | HTTP  | Origen                                                                       |
+|----------------------------|:-----:|------------------------------------------------------------------------------|
+| `CHUNK_CHECKSUM_REQUIRED`  | 400   | `PUT` de chunk sin header `X-Chunk-Checksum`                                  |
+| `CHUNK_CONTENT_MISMATCH`   | 409   | `PUT` sobre `OPEN`, misma secuencia, checksum distinto                        |
+| `UPLOAD_FINALIZING`        | 409   | `PUT` mientras la upload session está en `FINALIZING`                         |
+| `UPLOAD_SESSION_FINALIZED` | 409   | `PUT` sobre `FINALIZED` que no es un reintento con checksum idéntico          |
+| `MISSING_CHUNKS`           | 409   | `finalize` con conteo insuficiente o secuencia no densa                       |
+| `FINAL_CHECKSUM_MISMATCH`  | 422 ⚠ | `finalize` con secuencia completa pero checksum global divergente             |
+
+`MISSING_CHUNKS` reemplaza al código previo `INCOMPLETE_CHUNK_SEQUENCE`, que queda retirado del contrato REST, de la especificación OpenAPI y de los tests.
+
+Ante `CHUNK_CONTENT_MISMATCH` la vía de recuperación del cliente es **abortar** la upload session y abrir una nueva; el backend nunca sobrescribe el contenido del primer chunk aceptado.
+
 ### Bloqueo Aislado por Fallo de Persistencia (Requirement 10.2)
 
 Cuando la persistencia de artefactos falla durante `RECORDING → COMPLETED`:
@@ -1150,7 +1618,7 @@ Los handlers de excepciones globales (`@ControllerAdvice`) mapean las excepcione
 La plataforma adopta un enfoque de testing **dual y complementario**:
 
 - **Pruebas basadas en ejemplos** (unit + integration): verifican escenarios concretos, casos borde específicos, integraciones con dependencias externas (BD, extensión, object storage) y configuraciones. Son legibles y funcionan como documentación viva.
-- **Pruebas basadas en propiedades** (property-based tests): verifican las 20 propiedades de corrección declaradas más arriba, generando entradas aleatorias en cada iteración. Descubren clases enteras de bugs que los tests por ejemplo no cubren (combinaciones de estado, secuencias no obvias, datos borde).
+- **Pruebas basadas en propiedades** (property-based tests): verifican las 23 propiedades de corrección declaradas más arriba, generando entradas aleatorias en cada iteración. Descubren clases enteras de bugs que los tests por ejemplo no cubren (combinaciones de estado, secuencias no obvias, datos borde).
 
 Ambos enfoques son necesarios: ningún test basado en propiedades sustituye a un test por ejemplo bien escrito, y viceversa. La regla operativa es: **si un requisito tiene una propiedad en la sección `Correctness Properties`, debe existir al menos un test basado en propiedades que la valide; si tiene un caso concreto en los criterios de aceptación, debe existir al menos un test por ejemplo que lo cubra**.
 
@@ -1163,8 +1631,9 @@ Ambos enfoques son necesarios: ningún test basado en propiedades sustituye a un
 - Invariantes estructurales y de visibilidad (Properties 1, 2, 12).
 - Round-trip de persistencia y atomicidad (Properties 13, 14).
 - Propagación de correlationId y auditoría de seguridad (Properties 17, 18).
-- Mapeo de eventos a notificaciones (Property 19).
+- Mapeo de eventos a notificaciones, incluida la regla de respuesta del Administrador de Proyecto (Property 19).
 - Render i18n todo-o-nada (Property 20).
+- Protocolo de ingesta por chunks: idempotencia del `PUT`, round trip de `finalize`, detección exacta de huecos (`MISSING_CHUNKS`) e inmutabilidad de la upload session (Properties 21, 22, 23). Se ejecuta contra un object storage en memoria o mockeado, de modo que 100+ iteraciones tienen coste bajo.
 
 **No se aplica PBT** a:
 - Configuración y wiring de Spring (integración / smoke).
@@ -1199,7 +1668,7 @@ Ninguna biblioteca se implementa desde cero (Requirement 19.5 sobre no incorpora
 
 Cada spec por módulo debe:
 - Implementar los tests basados en ejemplo que cubran sus criterios de aceptación específicos.
-- Implementar los tests basados en propiedades **de este documento** que apliquen al módulo (por ejemplo, el módulo `review-session` implementa las Properties 3, 4, 5, 6, 13, 14; el módulo `wspr` implementa las Properties 2 y 7; el módulo `iam` implementa la Property 15 mediante filtros de Spring Security).
+- Implementar los tests basados en propiedades **de este documento** que apliquen al módulo (por ejemplo, el módulo `review-session` implementa las Properties 3, 4, 5, 6, 13, 14; el módulo `artifacts` implementa las Properties 21, 22, 23; el módulo `notifications` implementa la Property 19; el módulo `wspr` implementa las Properties 2 y 7; el módulo `iam` implementa la Property 15 mediante filtros de Spring Security).
 - Declarar **nuevas propiedades locales** al módulo que refinen o complementen las de fundación.
 - Emitir tests de arquitectura (ArchUnit o equivalente) que validen las **reglas de paquete** del monolito: un paquete de dominio no importa clases marcadas como internas de otro dominio, sólo consume su fachada pública; el paquete `shared` es importable por cualquier dominio; el grafo de dependencias entre fachadas de dominio (declarado en la sección *Vista de Dominios y Fachadas*) es acíclico. Estas reglas sustituyen a la comprobación previa de dependencias entre módulos Maven `*-api` / `*-impl`.
 
@@ -1236,8 +1705,14 @@ Los generadores comunes al dominio Reviews (usuarios, workspaces, proyectos, inv
 - `arbUser(role)` — usuario con rol arbitrario.
 - `arbProject(ownerAdminId)` — proyecto asignado a un admin concreto.
 - `arbReviewSessionInState(state)` — sesión en un estado válido concreto.
+- `arbTransitionAttempt` — tupla `(estadoOrigen, comando, rol, propiedad)` que enumera el producto completo estado × comando, para contrastar contra la matriz del Modelo 2 (incluyendo los casos ahora prohibidos: `archive` desde `Draft`/`Recording`/`Reopened`, `complete` desde `Reopened`).
 - `arbAccessScenario` — tupla `(user, project, invitationStatus)` que cubre todas las combinaciones del modelo de autorización.
 - `arbArtifactKind` — enumerador de tipos de artefacto respetando las reglas de captura vs anotación.
+- `arbReplyThread` — hilo de comentarios con autoría aleatoria de padre y respuesta (Cliente o Administrador propietario), para la Property 19 y la regla de notificación al Cliente.
+- `arbChunkedPayload` — payload binario aleatorio más un tamaño de chunk aleatorio, produciendo `n` chunks con sus checksums.
+- `arbChunkSendPlan` — permutación del orden de envío, subconjunto de reintentos idempotentes, subconjunto de omisiones (para `MISSING_CHUNKS`) y subconjunto de reenvíos con checksum divergente (para `CHUNK_CONTENT_MISMATCH`).
+- `arbUploadSessionInState(state)` — upload session en `OPEN`, `FINALIZING`, `FINALIZED` o `ABORTED`, para contrastar contra la tabla del Modelo 8.1.
+- `arbMultiArtifactUpload` — varios artefactos de la misma Review Session con espacios de secuencias solapados, para la parte de no-colisión de la Property 21.
 
 Estos generadores son la contraparte concreta de las propiedades: si una propiedad universaliza sobre `AuthenticatedPrincipal × Project`, el test correspondiente compone `arbUser` × `arbProject` × `arbAccessScenario`.
 

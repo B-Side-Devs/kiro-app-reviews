@@ -52,8 +52,7 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-reviews}
       SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-reviews}
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
-      JAVA_TOOL_OPTIONS: >-
-        ${BACKEND_JAVA_OPTS:--Xmx1024m}
+      JAVA_TOOL_OPTIONS: "${BACKEND_JAVA_OPTS:--Xmx1024m}"
     ports:
       - "${BACKEND_HOST_PORT:-8080}:8080"
       - "${BACKEND_DEBUG_PORT:-5005}:5005"
@@ -62,12 +61,12 @@ services:
       - backend-m2-cache:/root/.m2
     networks:
       - reviews-net
-    #healthcheck:
-    #  test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/actuator/health || exit 1"]
-    #  interval: 10s
-    #  timeout: 5s
-    #  retries: 12
-    #  start_period: 60s
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
 
 # ============================================================
 # Recovery note for local Flyway / DB issues
