@@ -159,7 +159,7 @@ Objetivo: núcleo de dominio construible y ejercitable módulo por módulo, con 
     - Invariantes estructurales: `Project.workspaceId` NOT NULL y FK válida, `Project.ownerAdminId` NOT NULL y con `role = PROJECT_ADMIN` (verificado vía fachada de `iam`)
     - _Requirements: 2.2, 2.3, 3.1, 3.3, 3.5, 11.5_
 
-  - [ ] 6.3 Implementar `canAccessProject` como lógica de dominio (doble llave rol + relación)
+  - [ ] 6.3 Implementar `canAccessProject` como lógica de dominio {rol + relación}
     - Bean público de la fachada `wspr`, orquestando `iam` + estado interno de `wspr`; **no** es un filtro HTTP ni depende de Spring Security
     - Evaluar `PROJECT_ADMIN + ownership` **o** `CLIENT + accepted invitation + not blocked`
     - Retornar `AccessDecision` con `granted` + `reason` clasificada, con corto-circuito y ordenamiento explícito de razones de denegación según el diseño
@@ -380,6 +380,14 @@ Objetivo: núcleo de dominio construible y ejercitable módulo por módulo, con 
     - La capa `rest` no llama directamente a clases marcadas como internas de dominio; sólo a fachadas
     - _Requirements: 19.1, 19.2_
 
+  - [ ] 16.3 Regla ArchUnit para exclusiones MVP
+    - Añadir en la clase de tests de arquitectura (tarea 1.2) una regla ArchUnit que verifique que las funcionalidades explícitamente excluidas del MVP no tienen código que las implemente
+    - Regla 1: no existe clase de producción relacionada con edición colaborativa en tiempo real — detectar clases cuyo nombre simple contenga `Realtime`, `Collaboration` o `Websocket` dentro de los paquetes de dominio (`io.github.bsidedevs.api_review.iam..`, `wspr..`, `rs..`, `art..`, `notif..`, `boff..`)
+    - Regla 2: no existe código de compartición pública de sesiones — detectar clases con `PublicShare` o `SessionShare` en el nombre dentro de los paquetes de dominio
+    - Regla 3: no existe integración con Jira ni con GitHub — detectar clases con `Jira` o `GitHub` en el nombre dentro de los paquetes de dominio
+    - La regla falla el build si detecta alguna exclusión implementada, hasta que el spec correspondiente la incorpore explícitamente
+    - _Requirements: 21.1, 21.2, 21.3, 21.4, 21.5, 21.6_
+
 - [ ] 17. Architecture Decision Records de fundación
   - [x] 17.1 Crear estructura `docs/adr/` con plantilla estándar
     - Plantilla `docs/adr/0000-template.md` con secciones: Contexto, Alternativas consideradas, Decisión, Consecuencias, Referencias
@@ -477,77 +485,89 @@ Objetivo: núcleo de dominio construible y ejercitable módulo por módulo, con 
   - Ensure all tests pass, ask the user if questions arise.
 
 - [ ] 23. Tests de integración y end-to-end
-  - [ ]* 23.1 Smoke test de integración con Testcontainers + PostgreSQL + Flyway
-    - Levantar contexto Spring Boot mínimo contra PostgreSQL 16 en Testcontainers
-    - Ejecutar migraciones Flyway y verificar arranque limpio
-    - _Requirements: 16.1, 16.3, 19.3_
+  - [ ]* 23.1 Tests de integración con Testcontainers (PostgreSQL real)
+    - Levantar contexto Spring Boot completo contra PostgreSQL 16 real en Testcontainers; ejecutar migraciones Flyway y verificar arranque limpio
+    - Verificar round-trip de persistencia de artefactos contra PostgreSQL (complementa la propiedad 13 de la tarea 10.7): crear sesión → capturar artefactos → completar → reapertura → verificar artefactos intactos con misma autoría y asociación
+    - Verificar la máquina de estados de Review Session con transacciones reales: todas las transiciones válidas e inválidas producen el estado correcto en base de datos
+    - _Requirements: 10.1, 10.3, 10.4, 8.1_
 
-  - [ ]* 23.2 Integration test: disponibilidad del endpoint OpenAPI ante fallo de regeneración
-    - Simular fallo de regeneración y verificar que la API sigue operativa y que `/openapi.json` sirve la especificación previa
-    - _Requirements: 13.4, 13.5, 13.6_
+  - [ ]* 23.2 Tests de integración de la especificación OpenAPI
+    - Verificar que el endpoint `/api/v1/openapi.json` sirve la especificación vigente aunque falle la regeneración
+    - Verificar que la API sigue operativa durante y después de un fallo de actualización de especificación
+    - **Property 20 (resiliencia OpenAPI)**: simular fallos de regeneración de la especificación y verificar que la API no deja de responder y que el endpoint de especificación devuelve la última versión publicada satisfactoriamente
+    - _Requirements: 13.2, 13.3, 13.4, 13.5, 13.6, 13.7_
 
-  - [ ]* 23.3 Tests end-to-end de la cadena HTTP completa
-    - Recorrer `correlationFilter` → `authenticationFilter` → `authorizationFilter` → fachada de dominio contra PostgreSQL en Testcontainers
-    - Cubrir un caso autorizado, uno denegado por rol, uno denegado por relación y uno sin credencial
-    - _Requirements: 16.1, 18.1, 18.2, 18.5_
+  - [ ]* 23.3 Tests end-to-end del flujo principal de revisión
+    - Flujo completo contra PostgreSQL en Testcontainers: crear proyecto → invitar cliente → crear sesión → iniciar captura → añadir artefactos → finalizar captura → añadir comentarios → verificar notificaciones → archivar sesión
+    - Verificar control de acceso en cada paso: rol correcto + relación correcta autoriza; rol incorrecto o sin relación deniega y registra en log de seguridad
+    - Cubrir: caso autorizado (admin propietario), denegado por rol (admin no propietario), denegado por relación (cliente sin invitación aceptada), sin credencial (401)
+    - _Requirements: 1.1, 1.2, 4.1, 4.4, 4.5, 5.2, 5.3, 5.4, 8.3, 8.4, 9.1, 9.3, 12.1, 12.3_
 
-- [ ] 24. Frontend SPA: scaffolding, i18n y responsive
-  - [ ] 24.1 Bootstrap del workspace `frontend/`
-    - Vite + TypeScript + React + Vitest sobre la carpeta `frontend/` (hoy vacía)
+- [ ] 24. Frontend SPA (aplicación web)
+  - [ ] 24.1 Crear el proyecto frontend (React + TypeScript + Vite)
+    - Bootstrap de `frontend/` con Vite + TypeScript + React + Vitest
+    - Generar el cliente REST TypeScript desde la especificación OpenAPI del backend
     - Añadir `fast-check` como dependencia de test para los property tests del frontend
-    - Configurar tooling común (linter, formatter) sin acoplamiento a un runner de CI específico
-    - _Requirements: 15.1, 16.3, 19.1_
+    - Configurar tooling común (linter, formatter, paths de alias) sin acoplamiento a un runner de CI específico
+    - _Requirements: 13.1_
 
-  - [ ] 24.2 Implementar el cliente REST y el layout base
-    - Cliente HTTP TypeScript que consume `/api/v1` con `X-Correlation-Id` opcional en request
+  - [ ] 24.2 Implementar el cliente REST con manejo de errores
+    - Cliente HTTP TypeScript que consume `/api/v1` con `X-Correlation-Id` en request
+    - Manejar respuestas de error: 401 → redirigir a login, 403 → mostrar mensaje de acceso denegado, 404 → página no encontrada, 409 → conflicto de estado, 422 → errores de validación, 5xx → error genérico con `correlationId`
+    - _Requirements: 13.1, 13.7_
+
+  - [ ] 24.3 Implementar layout base, routing e i18n
     - Layout base con enrutado inicial y páginas placeholder por rol (`ProjectAdmin`, `Client`, `PlatformAdmin`)
-    - _Requirements: 13.7, 15.1, 17.5_
+    - Externalizar todos los textos en archivos de recursos i18n en `frontend/src/i18n/{locale}.json`, sin textos literales en el código
+    - Selector de idioma en la UI; resolver locale efectivo una única vez por render
+    - Si el locale seleccionado tiene todas las claves requeridas → renderizar entero en ese locale
+    - Si cualquier clave requerida falta → renderizar entero en el Idioma por Defecto (sin mezcla de idiomas)
+    - **Property del frontend: fallback i18n todo-o-nada** — generar bundles aleatorios con claves faltantes y conjuntos requeridos aleatorios; verificar que el render efectivo es enteramente en el locale seleccionado si y sólo si todas las claves están presentes; en caso contrario, enteramente en el locale por defecto
+    - _Requirements: 14.1, 14.2, 14.3, 14.4, 14.5, 14.6_
 
-  - [ ] 24.3 Implementar cargador de bundles i18n con política todo-o-nada
-    - Bundles por locale en `frontend/src/i18n/{locale}.json`
-    - Resolver locale efectivo una única vez por render
-    - Si el locale seleccionado tiene todas las claves requeridas → renderizar entero en ese locale (aunque no sea "oficialmente soportado")
-    - Si cualquier clave requerida falta → renderizar entero en el locale por defecto (sin mezclar idiomas)
-    - _Requirements: 14.1, 14.2, 14.3_
-
-  - [ ] 24.4 Implementar layout responsive (desktop + mobile)
-    - Grid responsive con breakpoints
-    - Vistas de consulta y comentario disponibles en resoluciones móviles
+  - [ ] 24.4 Implementar diseño responsive (escritorio y móvil)
+    - Grid responsive con breakpoints para desktop y móvil
+    - En resoluciones móviles: funcionalidades de consulta y comentario sobre Review Sessions disponibles
     - _Requirements: 15.1, 15.2_
 
-  - [ ]* 24.5 Property test: i18n todo-o-nada por locale (fast-check)
-    - **Property 20: Render de i18n todo-o-nada por locale**
-    - Generar bundles aleatorios con claves faltantes y conjuntos requeridos aleatorios; verificar que el render efectivo es enteramente en el locale seleccionado si y sólo si todas las claves están presentes; en caso contrario, enteramente en el locale por defecto
-    - **Validates: Requirements 14.3**
+  - [ ] 24.5 Checkpoint - frontend SPA completo
+    - Ensure all tests pass, ask the user if questions arise.
 
-  - [ ]* 24.6 Component tests de breakpoints responsive
-    - Verificar renderizado de vistas de consulta y comentario en viewports móvil y desktop
-    - _Requirements: 15.1, 15.2_
-
-- [ ] 25. Extensión Autorizada
-  - [ ] 25.1 Bootstrap del paquete de extensión de navegador
-    - Crear `frontend/extension/` (o carpeta equivalente) con manifest WebExtension (MV3) y permisos mínimos necesarios
+- [ ] 25. Extensión Autorizada de navegador
+  - [ ] 25.1 Crear el proyecto de la Extensión Autorizada
+    - Crear `frontend/extension/` con manifest WebExtension (MV3) y permisos mínimos necesarios
     - Estructura de background/service worker + content script + popup UI en TypeScript
-    - _Requirements: 5.1, 19.1_
+    - Reutilizar el cliente REST generado desde OpenAPI del proyecto `frontend/` (cliente compartido)
+    - _Requirements: 5.1_
 
-  - [ ] 25.2 Implementar cliente REST + reutilización del mecanismo de autenticación
-    - Cliente HTTP compartido con el frontend (mismo endpoint `/api/v1`, misma sesión / token emitido por `iam`)
-    - _Requirements: 5.1, 18.1_
+  - [ ] 25.2 Implementar el flujo de captura desde la extensión
+    - Inicio y participación en Review Sessions desde la extensión: inicio de sesión, captura de artefactos e integración con la API REST del backend
+    - Reutilizar el mecanismo de autenticación de la SPA (mismo endpoint `/api/v1`, misma sesión/token emitido por `iam`)
+    - _Requirements: 5.1, 5.2, 8.3, 8.8_
 
-  - [ ]* 25.3 Unit tests del flujo de autenticación de la extensión
-    - Verificar que la extensión autentica con el mismo mecanismo que la SPA
-    - _Requirements: 5.1, 18.1_
+  - [ ] 25.3 Checkpoint - Extensión Autorizada completa
+    - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 26. Architecture Decision Records de Etapa 2
-  - [ ] 26.1 ADR-0007: Algoritmo de hashing de credenciales
-    - Decidir entre bcrypt y argon2; documentar parámetros
+- [ ] 26. ADRs de Etapa 2
+  - [ ] 26.1 ADR-0007: Elección del algoritmo de hashing de credenciales (bcrypt vs argon2)
+    - Contexto, alternativas (bcrypt, argon2id, scrypt), decisión y consecuencias
+    - Documentar parámetros de coste elegidos y razón de la elección
     - _Requirements: 18.4, 20.1_
 
-  - [ ] 26.2 ADR-0008: Locale por defecto y política de fallback i18n
-    - Documentar `default_locale = "es"` (ajustable) y la política todo-o-nada
-    - _Requirements: 14.3, 20.1_
+  - [ ] 26.2 ADR-0008: Estrategia de sesión y gestión de tokens
+    - Documentar el mecanismo de sesión elegido (cookies vs. JWT vs. tokens opacos), ciclo de vida de tokens, revocación y renovación
+    - _Requirements: 18.1, 20.1_
 
-- [ ] 27. Checkpoint final - fundación completa
+  - [ ] 26.3 ADR-0009: Configuración TLS y flags de cookies
+    - Documentar terminación TLS en el proxy, flags `Secure + HttpOnly + SameSite` en cookies de sesión y política de HSTS
+    - _Requirements: 18.3, 20.1_
+
+- [ ] 27. Checkpoint final del spec de fundación
+  - Ejecutar todos los tests de Etapa 1 (`./mvnw test`) y Etapa 2 (`npm test -- --run` en frontend y extensión)
+  - Verificar que el grafo ArchUnit (tareas 16.2 y 16.3) pasa sin errores de dependencias de dominio ni exclusiones MVP implementadas accidentalmente
+  - Verificar que las 20 propiedades de corrección pasan con ≥ 100 iteraciones cada una
+  - Verificar que la especificación OpenAPI está sincronizada con los endpoints expuestos (`/api/v1/openapi.json` refleja todos los controladores anotados)
+  - Verificar que los ADRs 0003–0009 existen y están documentados en `docs/adr/`
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes
@@ -564,6 +584,36 @@ Objetivo: núcleo de dominio construible y ejercitable módulo por módulo, con 
 
 ## Task Dependency Graph
 
+Las dependencias entre tareas de alto nivel son:
+
+- Tarea 1 → sin dependencias previas
+- Tarea 2 → sin dependencias previas (puede ejecutarse en paralelo con 1)
+- Tarea 3 → depende de 2 (usa `shared.CorrelationId`)
+- Tarea 4 → depende de 3
+- Tarea 5 → depende de 2, 3
+- Tarea 6 → depende de 5
+- Tarea 7 (checkpoint) → depende de 5, 6
+- Tarea 8 → depende de 6
+- Tarea 9 (checkpoint) → depende de 8
+- Tarea 10 → depende de 8
+- Tarea 11 (checkpoint) → depende de 10
+- Tarea 12 → depende de 10
+- Tarea 13 → depende de 5, 6, 8
+- Tarea 14 (checkpoint) → depende de 12, 13
+- Tarea 15 → depende de 14
+- Tarea 16 → depende de 15
+- Tarea 17 → depende de 1 (solo para la plantilla ADR)
+- Tarea 18 (checkpoint Etapa 1) → depende de 15, 16, 17
+- Tarea 19 → depende de 18
+- Tarea 20 → depende de 19
+- Tarea 21 → depende de 20
+- Tarea 22 (checkpoint seguridad) → depende de 21
+- Tarea 23 → depende de 22
+- Tarea 24 → depende de 18 (puede ejecutarse en paralelo con 19–22)
+- Tarea 25 → depende de 24
+- Tarea 26 → depende de 19, 20, 21
+- Tarea 27 (checkpoint final) → depende de 23, 25, 26
+
 ```json
 {
   "waves": [
@@ -574,15 +624,15 @@ Objetivo: núcleo de dominio construible y ejercitable módulo por módulo, con 
     { "id": 4, "tasks": ["6.4", "6.5", "6.6", "8.4", "12.3", "13.3", "15.1"] },
     { "id": 5, "tasks": ["8.5", "8.6", "8.7", "8.8", "10.3", "12.4", "12.5", "15.2"] },
     { "id": 6, "tasks": ["10.4", "10.5", "10.6", "10.7", "10.8", "15.3", "16.2"] },
-    { "id": 7, "tasks": ["19.1"] },
-    { "id": 8, "tasks": ["19.2"] },
-    { "id": 9, "tasks": ["19.3", "20.1"] },
-    { "id": 10, "tasks": ["19.4", "19.5", "20.2"] },
-    { "id": 11, "tasks": ["20.3", "20.4", "21.1"] },
-    { "id": 12, "tasks": ["23.1", "23.2", "23.3", "24.1"] },
-    { "id": 13, "tasks": ["24.2", "24.3", "24.4", "25.1", "26.1", "26.2"] },
-    { "id": 14, "tasks": ["24.5", "24.6", "25.2"] },
-    { "id": 15, "tasks": ["25.3"] }
+    { "id": 7, "tasks": ["16.3"] },
+    { "id": 8, "tasks": ["19.1"] },
+    { "id": 9, "tasks": ["19.2"] },
+    { "id": 10, "tasks": ["19.3", "20.1", "24.1"] },
+    { "id": 11, "tasks": ["19.4", "19.5", "20.2", "24.2"] },
+    { "id": 12, "tasks": ["20.3", "20.4", "21.1", "24.3", "24.4"] },
+    { "id": 13, "tasks": ["23.1", "26.1", "26.2", "26.3"] },
+    { "id": 14, "tasks": ["23.2", "23.3", "24.5", "25.1"] },
+    { "id": 15, "tasks": ["25.2"] }
   ]
 }
 ```
