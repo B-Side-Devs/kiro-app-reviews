@@ -65,3 +65,11 @@ management:
   endpoint:
     health:
       show-details: never
+
+aws:
+  s3:
+    enabled: ${AWS_S3_ENABLED:false}
+
+  access-key: ${AWS_ACCESS_KEY:}
+  secret-key: ${AWS_SECRET_KEY:}
+  region: ${AWS_REGION:us-east-1}
