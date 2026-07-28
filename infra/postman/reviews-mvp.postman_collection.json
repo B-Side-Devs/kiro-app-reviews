@@ -10,7 +10,10 @@
     { "key": "seed_owner_admin_id", "value": "018e0c5a-7b3f-7000-8000-000000000001" },
     { "key": "seed_client_id", "value": "018e0c5a-7b3f-7000-8000-000000000002" },
     { "key": "seed_other_admin_id", "value": "018e0c5a-7b3f-7000-8000-000000000003" },
-    { "key": "current_review_session_id", "value": "" }
+    { "key": "current_review_session_id", "value": "" },
+    { "key": "scene_session_id", "value": "" },
+    { "key": "draft_scene_session_id", "value": "" },
+    { "key": "scene_document", "value": "" }
   ],
   "event": [
     {
@@ -532,6 +535,356 @@
                   "raw": "{{base_url}}/api/v1/review-sessions/{{conflict_session_id}}",
                   "host": ["{{base_url}}"],
                   "path": ["api", "v1", "review-sessions", "{{conflict_session_id}}"]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Scene",
+      "item": [
+        {
+          "name": "Create Session For Scene",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-User-Id", "value": "{{seed_owner_admin_id}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/projects/{{seed_project_id}}/review-sessions",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "projects", "{{seed_project_id}}", "review-sessions"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Scene lifecycle session\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 201\", function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "pm.test(\"Save scene session ID\", function () {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set(\"scene_session_id\", body.reviewSessionId);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Start Recording (Scene)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-User-Id", "value": "{{seed_owner_admin_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/review-sessions/{{scene_session_id}}/start",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "review-sessions", "{{scene_session_id}}", "start"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"State is RECORDING\", function () {",
+                  "    pm.expect(pm.response.json().state).to.eql(\"RECORDING\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Save Scene",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "X-User-Id", "value": "{{seed_owner_admin_id}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/review-sessions/{{scene_session_id}}/scene",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "review-sessions", "{{scene_session_id}}", "scene"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"type\":\"excalidraw\",\"version\":2,\"source\":\"https://excalidraw.com\",\"elements\":[],\"appState\":{\"viewBackgroundColor\":\"#ffffff\"},\"files\":{}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"Content-Type is application/json\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/json\");",
+                  "});",
+                  "pm.test(\"Returned document equals the document sent\", function () {",
+                  "    const sent = JSON.parse(pm.request.body.raw);",
+                  "    pm.expect(pm.response.json()).to.eql(sent);",
+                  "});",
+                  "// Remember the stored document to assert retrieval later",
+                  "pm.collectionVariables.set(\"scene_document\", pm.request.body.raw);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Scene",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-User-Id", "value": "{{seed_owner_admin_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/review-sessions/{{scene_session_id}}/scene",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "review-sessions", "{{scene_session_id}}", "scene"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"Returned document equals the stored document\", function () {",
+                  "    const expected = JSON.parse(pm.collectionVariables.get(\"scene_document\"));",
+                  "    pm.expect(pm.response.json()).to.eql(expected);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Scene (Upsert)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "X-User-Id", "value": "{{seed_owner_admin_id}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/review-sessions/{{scene_session_id}}/scene",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "review-sessions", "{{scene_session_id}}", "scene"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"type\":\"excalidraw\",\"version\":2,\"source\":\"https://excalidraw.com\",\"elements\":[{\"id\":\"rect-1\",\"type\":\"rectangle\",\"x\":10,\"y\":10,\"width\":100,\"height\":50}],\"appState\":{\"viewBackgroundColor\":\"#ffffff\"},\"files\":{}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"Returned document reflects the replacement\", function () {",
+                  "    const sent = JSON.parse(pm.request.body.raw);",
+                  "    pm.expect(pm.response.json()).to.eql(sent);",
+                  "});",
+                  "// Update the remembered document for the next retrieval",
+                  "pm.collectionVariables.set(\"scene_document\", pm.request.body.raw);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Scene After Upsert",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-User-Id", "value": "{{seed_owner_admin_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/review-sessions/{{scene_session_id}}/scene",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "review-sessions", "{{scene_session_id}}", "scene"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"Upsert fully replaced the previous document\", function () {",
+                  "    const expected = JSON.parse(pm.collectionVariables.get(\"scene_document\"));",
+                  "    pm.expect(pm.response.json()).to.eql(expected);",
+                  "});",
+                  "pm.test(\"Document now has one element\", function () {",
+                  "    pm.expect(pm.response.json().elements).to.have.lengthOf(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Complete Recording (Scene)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-User-Id", "value": "{{seed_owner_admin_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/review-sessions/{{scene_session_id}}/complete",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "review-sessions", "{{scene_session_id}}", "complete"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"State is COMPLETED\", function () {",
+                  "    pm.expect(pm.response.json().state).to.eql(\"COMPLETED\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rejections",
+          "item": [
+            {
+              "name": "Rejection - Save Scene When Not Recording",
+              "request": {
+                "method": "PUT",
+                "header": [
+                  { "key": "X-User-Id", "value": "{{seed_owner_admin_id}}" },
+                  { "key": "Content-Type", "value": "application/json" }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/review-sessions/{{scene_session_id}}/scene",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "v1", "review-sessions", "{{scene_session_id}}", "scene"]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"type\":\"excalidraw\",\"version\":2,\"elements\":[],\"appState\":{},\"files\":{}}"
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Status is 409\", function () {",
+                      "    pm.response.to.have.status(409);",
+                      "});",
+                      "pm.test(\"Content-Type is application/problem+json\", function () {",
+                      "    pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\");",
+                      "});",
+                      "pm.test(\"Error code is SCENE_NOT_EDITABLE\", function () {",
+                      "    pm.expect(pm.response.json().code).to.eql(\"SCENE_NOT_EDITABLE\");",
+                      "});",
+                      "pm.test(\"Reports the blocking current state\", function () {",
+                      "    pm.expect(pm.response.json().currentState).to.eql(\"COMPLETED\");",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Rejection - Get Scene Not Found",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Create a fresh DRAFT session (no scene persisted) for the not-found case",
+                      "const baseUrl = pm.environment.get(\"base_url\") || pm.collectionVariables.get(\"base_url\") || \"http://localhost:8080\";",
+                      "const projectId = pm.collectionVariables.get(\"seed_project_id\");",
+                      "const userId = pm.collectionVariables.get(\"seed_owner_admin_id\");",
+                      "",
+                      "pm.sendRequest({",
+                      "    url: baseUrl + \"/api/v1/projects/\" + projectId + \"/review-sessions\",",
+                      "    method: \"POST\",",
+                      "    header: [",
+                      "        { key: \"X-User-Id\", value: userId },",
+                      "        { key: \"Content-Type\", value: \"application/json\" }",
+                      "    ],",
+                      "    body: { mode: \"raw\", raw: JSON.stringify({ name: \"Scene not-found session\" }) }",
+                      "}, function(err, resp) {",
+                      "    if (!err && resp.code === 201) {",
+                      "        pm.collectionVariables.set(\"draft_scene_session_id\", resp.json().reviewSessionId);",
+                      "    }",
+                      "});"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Status is 404\", function () {",
+                      "    pm.response.to.have.status(404);",
+                      "});",
+                      "pm.test(\"Content-Type is application/problem+json\", function () {",
+                      "    pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\");",
+                      "});",
+                      "pm.test(\"Error code is SCENE_NOT_FOUND\", function () {",
+                      "    pm.expect(pm.response.json().code).to.eql(\"SCENE_NOT_FOUND\");",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  { "key": "X-User-Id", "value": "{{seed_owner_admin_id}}" }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/review-sessions/{{draft_scene_session_id}}/scene",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "v1", "review-sessions", "{{draft_scene_session_id}}", "scene"]
                 }
               }
             }
