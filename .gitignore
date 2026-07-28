@@ -16,3 +16,11 @@ buildNumber.properties
 # JDT-specific (Eclipse Java Development Tools)
 .classpath
 .vscode
+
+# Local development environment variables (see infra/docker/.env.example)
+.env
+infra/docker/.env
+frontend/
+docs/
+infra/docker/test/*
+.idea/
