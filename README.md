@@ -1,13 +1,5 @@
 # Reviews
 
-
-**Reviews** es una plataforma SaaS diseñada para que desarrolladores, freelancers, agencias y equipos de producto puedan revisar aplicaciones web de una forma mucho más eficiente que utilizando capturas de pantalla, documentos o largos intercambios de mensajes.
-
-En lugar de explicar un problema con texto o imágenes aisladas, Reviews permite **grabar una sesión completa de navegación**, agregar anotaciones visuales directamente sobre la interfaz y compartir el resultado como una review interactiva.
-
-
-# Reviews
-
 > **Deja de explicar bugs. Empieza a mostrarlos.**
 
 **Reviews** es una plataforma SaaS pensada para desarrolladores, freelancers, agencias y equipos de producto que necesitan revisar aplicaciones web sin perder tiempo en capturas desactualizadas, documentos interminables o hilos de mensajes que nadie vuelve a leer.
